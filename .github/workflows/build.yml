@@ -111,7 +111,6 @@ jobs:
 
       - name: Create portable package
         run: |
-          # Create final portable folder
           $version = if ($env:GITHUB_REF -match 'refs/tags/v(.+)') { $matches[1] } else { "dev" }
           $folderName = "MailConverter_v${version}_Windows"
           
@@ -119,39 +118,34 @@ jobs:
             Rename-Item -Path "MailConverter_Portable" -NewName $folderName
           }
           
-          # Create README for Windows users
-          $readmeContent = @'
-Mayo's Mail Converter - Portable Windows Edition
-==========================================
-
-QUICK START:
-1. Double-click MailConverter.exe
-2. Select your PST file
-3. Choose output folder
-4. Click "Convert"
-
-INCLUDED TOOLS:
-- readpst.exe - Extracts emails from PST files
-- Poppler tools - PDF processing
-
-OPTIONAL (install separately for best results):
-- LibreOffice - For converting DOC/DOCX/PPT/XLS files
-  Download: https://www.libreoffice.org/download/
-  
-- Tesseract OCR - For extracting text from scanned PDFs
-  Download: https://github.com/UB-Mannheim/tesseract/wiki
-
-LICENSE:
-PolyForm Noncommercial License 1.0.0
-Free for personal and non-commercial use.
-Commercial use requires a separate license.
-
-SUPPORT:
-https://github.com/edydex/mail_converter
-'@
-          $readmeContent | Out-File -FilePath "$folderName/README.txt" -Encoding UTF8
+          # Create README
+          $lines = @(
+            "Mayos Mail Converter - Portable Windows Edition",
+            "==========================================",
+            "",
+            "QUICK START:",
+            "1. Double-click MailConverter.exe",
+            "2. Select your PST file", 
+            "3. Choose output folder",
+            "4. Click Convert",
+            "",
+            "INCLUDED TOOLS:",
+            "- readpst.exe - Extracts emails from PST files",
+            "- Poppler tools - PDF processing",
+            "",
+            "OPTIONAL (install separately for best results):",
+            "- LibreOffice - For converting DOC/DOCX/PPT/XLS files",
+            "  Download: https://www.libreoffice.org/download/",
+            "",
+            "- Tesseract OCR - For extracting text from scanned PDFs",
+            "  Download: https://github.com/UB-Mannheim/tesseract/wiki",
+            "",
+            "LICENSE: PolyForm Noncommercial License 1.0.0",
+            "",
+            "SUPPORT: https://github.com/edydex/mail_converter"
+          )
+          $lines | Out-File -FilePath "$folderName/README.txt" -Encoding UTF8
           
-          # Zip it
           Compress-Archive -Path $folderName -DestinationPath "$folderName.zip"
           Write-Host "Created $folderName.zip"
         shell: pwsh
