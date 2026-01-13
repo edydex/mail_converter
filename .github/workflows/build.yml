@@ -157,7 +157,7 @@ jobs:
       run: |
         echo "Starting PyInstaller build process..."
         
-        cd build
+        # Run PyInstaller from project root with spec file
         python -m PyInstaller mail_converter.spec --clean
         
         echo "Build process completed"
@@ -170,27 +170,41 @@ jobs:
         $distDir = "MayosMailConverter_Portable"
         New-Item -ItemType Directory -Force -Path $distDir
         
-        # Copy executable and dependencies
-        if (Test-Path "build/dist/MayosMailConverter") {
-          Copy-Item -Path "build/dist/MayosMailConverter/*" -Destination $distDir -Recurse -Force
-          echo "[OK] Copied main application"
+        # Copy executable and dependencies (PyInstaller outputs to dist/)
+        if (Test-Path "dist/MayosMailConverter") {
+          Copy-Item -Path "dist/MayosMailConverter/*" -Destination $distDir -Recurse -Force
+          echo "[OK] Copied main application from dist/MayosMailConverter"
+        } elseif (Test-Path "dist/MayosMailConverter.exe") {
+          Copy-Item "dist/MayosMailConverter.exe" "$distDir/"
+          echo "[OK] Copied standalone executable"
+        } else {
+          echo "[ERROR] No build output found!"
+          echo "Contents of dist directory:"
+          Get-ChildItem -Path "dist" -Recurse -ErrorAction SilentlyContinue
+          exit 1
         }
         
-        # Copy readpst.exe and DLL to application directory
-        if (Test-Path "build/bin/readpst.exe") {
-          Copy-Item "build/bin/readpst.exe" "$distDir/"
-          echo "[OK] Copied readpst.exe"
+        # Copy readpst.exe and DLL (if not already bundled by PyInstaller)
+        if (-not (Test-Path "$distDir/readpst.exe")) {
+          if (Test-Path "build/bin/readpst.exe") {
+            Copy-Item "build/bin/readpst.exe" "$distDir/"
+            echo "[OK] Copied readpst.exe"
+          }
         }
-        if (Test-Path "build/bin/libpst-4.dll") {
-          Copy-Item "build/bin/libpst-4.dll" "$distDir/"
-          echo "[OK] Copied libpst-4.dll"
+        if (-not (Test-Path "$distDir/libpst-4.dll")) {
+          if (Test-Path "build/bin/libpst-4.dll") {
+            Copy-Item "build/bin/libpst-4.dll" "$distDir/"
+            echo "[OK] Copied libpst-4.dll"
+          }
         }
         
-        # Copy poppler binaries
-        if (Test-Path "build/poppler/poppler-24.08.0/Library/bin") {
-          New-Item -ItemType Directory -Force -Path "$distDir/poppler"
-          Copy-Item -Path "build/poppler/poppler-24.08.0/Library/bin/*" -Destination "$distDir/poppler/" -Force
-          echo "[OK] Copied Poppler binaries"
+        # Copy poppler binaries (if not already bundled)
+        if (-not (Test-Path "$distDir/poppler")) {
+          if (Test-Path "build/poppler/poppler-24.08.0/Library/bin") {
+            New-Item -ItemType Directory -Force -Path "$distDir/poppler"
+            Copy-Item -Path "build/poppler/poppler-24.08.0/Library/bin/*" -Destination "$distDir/poppler/" -Force
+            echo "[OK] Copied Poppler binaries"
+          }
         }
         
         # Create README using array of lines

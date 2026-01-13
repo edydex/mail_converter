@@ -1,6 +1,6 @@
 # -*- mode: python ; coding: utf-8 -*-
 """
-PyInstaller spec file for Mail Converter
+PyInstaller spec file for Mayo's Mail Converter
 
 To build:
     pyinstaller mail_converter.spec
@@ -20,16 +20,40 @@ block_cipher = None
 
 # Get the project root
 PROJECT_ROOT = Path(SPECPATH)
+BUILD_DIR = PROJECT_ROOT / 'build'
+
+# Collect binary files for Windows
+binaries_list = []
+datas_list = []
+
+# Add readpst.exe and libpst DLL for Windows
+if sys.platform == 'win32':
+    readpst_path = BUILD_DIR / 'bin' / 'readpst.exe'
+    libpst_path = BUILD_DIR / 'bin' / 'libpst-4.dll'
+    
+    if readpst_path.exists():
+        binaries_list.append((str(readpst_path), '.'))
+    if libpst_path.exists():
+        binaries_list.append((str(libpst_path), '.'))
+    
+    # Add poppler binaries
+    poppler_bin = BUILD_DIR / 'poppler' / 'poppler-24.08.0' / 'Library' / 'bin'
+    if poppler_bin.exists():
+        for dll in poppler_bin.glob('*.dll'):
+            binaries_list.append((str(dll), 'poppler'))
+        for exe in poppler_bin.glob('*.exe'):
+            binaries_list.append((str(exe), 'poppler'))
+
+# Add assets if they exist
+if (PROJECT_ROOT / 'assets').exists():
+    datas_list.append(('assets', 'assets'))
 
 # Collect all source files
 a = Analysis(
     ['main.py'],
     pathex=[str(PROJECT_ROOT)],
-    binaries=[],
-    datas=[
-        # Include assets if they exist
-        ('assets', 'assets') if (PROJECT_ROOT / 'assets').exists() else (None, None),
-    ],
+    binaries=binaries_list,
+    datas=datas_list,
     hiddenimports=[
         'PIL._tkinter_finder',
         'reportlab.graphics.barcode.common',
@@ -57,9 +81,6 @@ a = Analysis(
     noarchive=False,
 )
 
-# Filter out None entries from datas
-a.datas = [d for d in a.datas if d[0] is not None]
-
 pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 
 exe = EXE(
@@ -69,7 +90,7 @@ exe = EXE(
     a.zipfiles,
     a.datas,
     [],
-    name='MailConverter',
+    name='MayosMailConverter',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
