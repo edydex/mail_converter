@@ -1,0 +1,94 @@
+[build-system]
+requires = ["setuptools>=45", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mail_converter"
+version = "1.0.0"
+description = "Convert PST emails to PDF with attachments"
+readme = "README.md"
+license = {text = "MIT"}
+authors = [
+    {name = "edydex"}
+]
+requires-python = ">=3.8"
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Legal Industry",
+    "Intended Audience :: End Users/Desktop",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Communications :: Email",
+    "Topic :: Office/Business",
+]
+keywords = ["pst", "pdf", "email", "converter", "outlook", "forensics"]
+
+dependencies = [
+    "PyPDF2>=3.0.1",
+    "reportlab>=4.0.0",
+    "pypdf>=3.17.0",
+    "python-docx>=0.8.11",
+    "python-pptx>=0.6.21",
+    "openpyxl>=3.1.2",
+    "xlrd>=2.0.1",
+    "pandas>=2.1.3",
+    "Pillow>=10.1.0",
+    "pytesseract>=0.3.10",
+    "pdf2image>=1.16.3",
+    "img2pdf>=0.5.1",
+    "extract-msg>=0.45.0",
+    "pdfkit>=1.0.0",
+    "pytz>=2023.3",
+    "python-dateutil>=2.8.2",
+    "tqdm>=4.66.0",
+    "typing-extensions>=4.8.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-cov>=4.0.0",
+    "black>=23.0.0",
+    "flake8>=6.0.0",
+    "mypy>=1.0.0",
+]
+build = [
+    "pyinstaller>=5.0.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/edydex/mail_converter"
+Repository = "https://github.com/edydex/mail_converter"
+Issues = "https://github.com/edydex/mail_converter/issues"
+
+[project.scripts]
+mail-converter = "main:main"
+
+[project.gui-scripts]
+mail-converter-gui = "main:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["core*", "gui*", "utils*"]
+
+[tool.black]
+line-length = 100
+target-version = ['py38', 'py39', 'py310', 'py311', 'py312']
+include = '\.pyi?$'
+
+[tool.mypy]
+python_version = "3.8"
+warn_return_any = true
+warn_unused_configs = true
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+addopts = "-v --tb=short"

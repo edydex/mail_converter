@@ -1,0 +1,212 @@
+name: Build Windows Portable
+
+on:
+  push:
+    branches: [main]
+    tags:
+      - 'v*'
+  pull_request:
+    branches: [main]
+  workflow_dispatch:  # Allow manual trigger
+
+env:
+  PYTHON_VERSION: '3.11'
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: 'pip'
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      - name: Download libpst (readpst.exe)
+        run: |
+          New-Item -ItemType Directory -Force -Path build/bin
+          
+          # Download from pst-format/libpst releases
+          $url = "https://github.com/pst-format/libpst/releases/download/libpst-0.6.76/libpst-0.6.76-win64.zip"
+          Write-Host "Downloading libpst from $url"
+          Invoke-WebRequest -Uri $url -OutFile libpst.zip -UseBasicParsing
+          
+          Expand-Archive -Path libpst.zip -DestinationPath libpst_temp -Force
+          
+          # Find readpst.exe
+          $readpst = Get-ChildItem -Path libpst_temp -Recurse -Filter "readpst.exe" | Select-Object -First 1
+          if ($readpst) {
+            Copy-Item $readpst.FullName -Destination build/bin/readpst.exe
+            Write-Host "✓ readpst.exe copied to build/bin/"
+            
+            # Also copy any DLLs it might need
+            $dllFiles = Get-ChildItem -Path $readpst.DirectoryName -Filter "*.dll"
+            foreach ($dll in $dllFiles) {
+              Copy-Item $dll.FullName -Destination build/bin/
+              Write-Host "  Copied $($dll.Name)"
+            }
+          } else {
+            Write-Error "readpst.exe not found in archive!"
+            Get-ChildItem -Path libpst_temp -Recurse
+            exit 1
+          }
+          
+          Remove-Item -Path libpst.zip -Force
+          Remove-Item -Path libpst_temp -Recurse -Force
+        shell: pwsh
+
+      - name: Download Poppler (for PDF to image)
+        run: |
+          $url = "https://github.com/oschwartz10612/poppler-windows/releases/download/v24.02.0-0/Release-24.02.0-0.zip"
+          Write-Host "Downloading Poppler from $url"
+          Invoke-WebRequest -Uri $url -OutFile poppler.zip -UseBasicParsing
+          
+          Expand-Archive -Path poppler.zip -DestinationPath poppler_temp -Force
+          
+          # Find poppler bin directory and copy pdftoppm.exe etc
+          $popplerBin = Get-ChildItem -Path poppler_temp -Recurse -Directory -Filter "bin" | Select-Object -First 1
+          if ($popplerBin) {
+            New-Item -ItemType Directory -Force -Path build/bin/poppler
+            Copy-Item "$($popplerBin.FullName)\*" -Destination build/bin/poppler/ -Recurse
+            Write-Host "✓ Poppler tools copied to build/bin/poppler/"
+          }
+          
+          Remove-Item -Path poppler.zip -Force
+          Remove-Item -Path poppler_temp -Recurse -Force
+        shell: pwsh
+
+      - name: Verify dependencies
+        run: |
+          Write-Host "=== Checking bundled dependencies ==="
+          if (Test-Path "build/bin/readpst.exe") {
+            Write-Host "✓ readpst.exe"
+          } else {
+            Write-Host "✗ readpst.exe MISSING"
+          }
+          if (Test-Path "build/bin/poppler/pdftoppm.exe") {
+            Write-Host "✓ poppler (pdftoppm.exe)"
+          } else {
+            Write-Host "✗ poppler MISSING"
+          }
+          Write-Host ""
+          Write-Host "=== build/bin/ contents ==="
+          Get-ChildItem -Path build/bin -Recurse | ForEach-Object { Write-Host $_.FullName }
+        shell: pwsh
+
+      - name: Build Windows executable
+        run: |
+          python build/build_exe.py
+        env:
+          CI: true
+
+      - name: Create portable package
+        run: |
+          # Create final portable folder
+          $version = if ($env:GITHUB_REF -match 'refs/tags/v(.+)') { $matches[1] } else { "dev" }
+          $folderName = "MailConverter_v${version}_Windows"
+          
+          if (Test-Path "MailConverter_Portable") {
+            Rename-Item -Path "MailConverter_Portable" -NewName $folderName
+          }
+          
+          # Create README for Windows users
+          @"
+Mayo's Mail Converter - Portable Windows Edition
+==========================================
+
+QUICK START:
+1. Double-click MailConverter.exe
+2. Select your PST file
+3. Choose output folder
+4. Click "Convert"
+
+INCLUDED TOOLS:
+- readpst.exe - Extracts emails from PST files
+- Poppler tools - PDF processing
+
+OPTIONAL (install separately for best results):
+- LibreOffice - For converting DOC/DOCX/PPT/XLS files
+  Download: https://www.libreoffice.org/download/
+  
+- Tesseract OCR - For extracting text from scanned PDFs
+  Download: https://github.com/UB-Mannheim/tesseract/wiki
+
+LICENSE:
+PolyForm Noncommercial License 1.0.0
+Free for personal and non-commercial use.
+Commercial use requires a separate license.
+
+SUPPORT:
+https://github.com/edydex/mail_converter
+"@ | Out-File -FilePath "$folderName/README.txt" -Encoding UTF8
+          
+          # Zip it
+          Compress-Archive -Path $folderName -DestinationPath "$folderName.zip"
+          Write-Host "✓ Created $folderName.zip"
+        shell: pwsh
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: MailConverter-Windows
+          path: MailConverter_v*_Windows.zip
+          if-no-files-found: error
+
+  # Create release only on version tags
+  release:
+    needs: build-windows
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    
+    steps:
+      - name: Download artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: MailConverter-Windows
+
+      - name: Get version
+        id: version
+        run: echo "version=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          name: Mayo's Mail Converter ${{ steps.version.outputs.version }}
+          body: |
+            ## Mayo's Mail Converter ${{ steps.version.outputs.version }}
+            
+            **Windows Portable Edition** - No installation required!
+            
+            ### Download
+            Download `MailConverter_${{ steps.version.outputs.version }}_Windows.zip`, extract anywhere, and run `MailConverter.exe`.
+            
+            ### Included
+            - ✅ PST extraction (readpst)
+            - ✅ PDF processing (Poppler)
+            - ✅ All Python dependencies bundled
+            
+            ### Optional (for full functionality)
+            - **LibreOffice** - Convert DOC/DOCX/PPT/XLS → [Download](https://www.libreoffice.org/download/)
+            - **Tesseract OCR** - Extract text from scanned PDFs → [Download](https://github.com/UB-Mannheim/tesseract/wiki)
+            
+            ### For Mac/Linux Users
+            See the [README](https://github.com/edydex/mail_converter#installation) for installation instructions.
+            
+            ---
+            **License:** PolyForm Noncommercial 1.0.0
+          files: |
+            MailConverter_*.zip
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
