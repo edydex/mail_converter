@@ -2,7 +2,7 @@
 
 Convert PST email archives to PDF for e-discovery, litigation support, and records management.
 
-## 🎯 What It Does
+## What It Does
 
 - Extracts all emails from Outlook PST files
 - Converts each email + all attachments into a single, searchable PDF
@@ -12,64 +12,68 @@ Convert PST email archives to PDF for e-discovery, litigation support, and recor
 
 **Perfect for:** Law firms, legal assistants, compliance teams, anyone dealing with discovery requests.
 
-## 📦 Downloads
+---
 
-### Windows (Recommended)
+## Downloads
+
+### Windows (Easiest)
+
 **[Download Latest Release](https://github.com/edydex/mail_converter/releases/latest)**
 
-1. Download `MailConverter_vX.X.X_Windows.zip`
+1. Download `MayosMailConverter_Portable.zip`
 2. Extract anywhere
-3. Double-click `MailConverter.exe`
+3. Double-click `MayosMailConverter.exe`
 4. No installation required!
 
-**Bundled:** PST extraction, PDF processing  
-**Optional:** [LibreOffice](https://www.libreoffice.org/download/) for Office docs, [Tesseract](https://github.com/UB-Mannheim/tesseract/wiki) for OCR
+**Included:** PST extraction (readpst), PDF processing (Poppler)  
+**Optional:** [LibreOffice](https://www.libreoffice.org/download/) for Office docs
 
 ---
 
-### macOS / Linux (Power Users)
+### macOS
 
-<details>
-<summary>Click to expand installation instructions</summary>
+One script does everything - installs dependencies, sets up Python environment, launches the app:
 
-#### macOS
 ```bash
-# Install dependencies
-brew install libpst tesseract poppler libreoffice
-
-# Clone and setup
+# Download and run
 git clone https://github.com/edydex/mail_converter.git
 cd mail_converter
-python3 -m venv venv
-source venv/bin/activate
-pip install -r requirements.txt
-
-# Run
-python main.py
+./run_mac.sh
 ```
 
-#### Linux (Ubuntu/Debian)
-```bash
-# Install dependencies
-sudo apt-get update
-sudo apt-get install pst-utils tesseract-ocr poppler-utils libreoffice
+First run will:
+- Install Homebrew (if needed)
+- Install Python 3 and libpst via Homebrew
+- Create a virtual environment
+- Install all Python packages
+- Launch the app
 
-# Clone and setup
-git clone https://github.com/edydex/mail_converter.git
-cd mail_converter
-python3 -m venv venv
-source venv/bin/activate
-pip install -r requirements.txt
-
-# Run
-python main.py
-```
-
-</details>
+Subsequent runs just launch the app instantly.
 
 ---
 
-## 📁 Output Structure
+### Linux (Ubuntu/Debian/Fedora/Arch)
+
+Same deal - one script handles everything:
+
+```bash
+# Download and run
+git clone https://github.com/edydex/mail_converter.git
+cd mail_converter
+./run_linux.sh
+```
+
+First run will:
+- Install system packages via apt/dnf/pacman (requires sudo)
+- Create a virtual environment
+- Install all Python packages
+- Launch the app
+
+Supported package managers: apt, dnf, yum, pacman, zypper
+
+---
+
+## Output Structure
 
 ```
 output/
@@ -83,48 +87,67 @@ output/
 └── conversion_log.txt
 ```
 
-## ✅ Supported Formats
+---
+
+## Supported Formats
 
 | Category | Formats |
 |----------|---------|
 | **Email** | PST, EML, MSG |
 | **Documents** | PDF, DOC, DOCX, XLS, XLSX, PPT, PPTX, TXT, CSV, HTML |
 | **Images** | JPG, PNG, GIF, BMP, TIFF |
-| **Other** | Nested email attachments, scanned PDFs (with OCR) |
+| **Other** | Nested email attachments |
 
-## 🔧 Optional: Better Document Conversion
+---
+
+## Optional: Better Document Conversion
 
 For best results converting Office documents (Word, Excel, PowerPoint):
 
-**Windows:** Install [LibreOffice](https://www.libreoffice.org/download/) (free, portable version works)
+Install [LibreOffice](https://www.libreoffice.org/download/) (free)
 
-The app will automatically detect LibreOffice if installed. Without it, Office docs are embedded as attachments rather than converted.
+The app will automatically detect LibreOffice if installed. Without it, Office docs are embedded as attachments rather than converted to PDF.
 
-## 📋 License
-
-**PolyForm Noncommercial License 1.0.0**
-
-- ✅ Free for personal use
-- ✅ Free for non-profits, educational institutions, government
-- ❌ Commercial use requires a separate license
-
-See [LICENSE](LICENSE) for details.
-
-## 🤝 Contributing
-
-Issues and pull requests welcome! This is a side project, so response times may vary.
-  - `attachment_converter.py` - Convert various formats to PDF
-  - `pdf_merger.py` - Merge PDFs and handle OCR
-  - `duplicate_detector.py` - Duplicate email detection
-- `utils/`
-  - `ocr_handler.py` - OCR processing wrapper
-  - `file_utils.py` - File handling utilities
-  - `progress_tracker.py` - Progress tracking for GUI
-- `gui/`
-  - `main_window.py` - Main application window
-  - `progress_dialog.py` - Progress dialog
-  - `settings_dialog.py` - Settings/options dialog
+---
 
 ## License
 
-MIT License
+**PolyForm Noncommercial License 1.0.0**
+
+- Free for personal use
+- Free for non-profits, educational institutions, government
+- Commercial use requires a separate license
+
+See [LICENSE](LICENSE) for details.
+
+---
+
+## Contributing
+
+Issues and pull requests welcome.
+
+---
+
+## Project Structure
+
+```
+mail_converter/
+├── main.py                    # Entry point
+├── run_mac.sh                 # macOS launcher/installer
+├── run_linux.sh               # Linux launcher/installer
+├── core/
+│   ├── pst_extractor.py       # PST extraction via readpst
+│   ├── email_parser.py        # Email parsing
+│   ├── email_to_pdf.py        # Email to PDF conversion
+│   ├── attachment_converter.py # Convert attachments to PDF
+│   ├── pdf_merger.py          # Merge PDFs
+│   └── conversion_pipeline.py # Main processing pipeline
+├── gui/
+│   ├── main_window.py         # Main application window
+│   ├── progress_dialog.py     # Progress dialog
+│   └── settings_dialog.py     # Settings dialog
+└── assets/
+    ├── icon.png               # Application icon
+    └── icon.ico               # Windows icon
+```
+
