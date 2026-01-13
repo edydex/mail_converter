@@ -120,7 +120,7 @@ jobs:
           }
           
           # Create README for Windows users
-          @"
+          $readmeContent = @'
 Mayo's Mail Converter - Portable Windows Edition
 ==========================================
 
@@ -148,11 +148,12 @@ Commercial use requires a separate license.
 
 SUPPORT:
 https://github.com/edydex/mail_converter
-"@ | Out-File -FilePath "$folderName/README.txt" -Encoding UTF8
+'@
+          $readmeContent | Out-File -FilePath "$folderName/README.txt" -Encoding UTF8
           
           # Zip it
           Compress-Archive -Path $folderName -DestinationPath "$folderName.zip"
-          Write-Host "✓ Created $folderName.zip"
+          Write-Host "Created $folderName.zip"
         shell: pwsh
 
       - name: Upload artifact
