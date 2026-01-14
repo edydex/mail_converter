@@ -64,69 +64,43 @@ jobs:
           echo "Manual build reason: ${{ github.event.inputs.reason }}"
         }
 
-    - name: Download readpst.exe from MSYS2
+    - name: Set up MSYS2
+      uses: msys2/setup-msys2@v2
+      with:
+        msystem: MINGW64
+        update: false
+        install: mingw-w64-x86_64-libpst
+
+    - name: Copy readpst and dependencies from MSYS2
+      shell: msys2 {0}
       run: |
-        echo "Downloading readpst.exe from MSYS2 Windows package..."
+        echo "Copying readpst.exe and all dependencies..."
+        mkdir -p build/bin
         
-        # Create bin directory
-        New-Item -ItemType Directory -Force -Path "build/bin"
+        # Copy readpst and libpst
+        cp /mingw64/bin/readpst.exe build/bin/
+        cp /mingw64/bin/libpst-4.dll build/bin/
         
-        # Download MSYS2 libpst package (contains pre-compiled Windows binaries)
-        $packageUrl = "https://mirror.msys2.org/mingw/mingw64/mingw-w64-x86_64-libpst-0.6.76.r78.g0dfabdc-1-any.pkg.tar.zst"
-        $packageFile = "libpst-package.pkg.tar.zst"
+        # Copy all required MinGW runtime DLLs
+        # Use ldd to find dependencies and copy them
+        for dll in $(ldd /mingw64/bin/readpst.exe | grep mingw64 | awk '{print $3}'); do
+          if [ -f "$dll" ]; then
+            cp "$dll" build/bin/
+            echo "Copied: $(basename $dll)"
+          fi
+        done
         
-        try {
-          echo "[INFO] Downloading MSYS2 libpst package..."
-          Invoke-WebRequest -Uri $packageUrl -OutFile $packageFile -UserAgent "Mozilla/5.0"
-          echo "[OK] Downloaded libpst package"
-          
-          # Install 7zip to extract .zst files
-          echo "[INFO] Installing 7zip to extract package..."
-          choco install -y 7zip --no-progress
-          
-          # Extract the package (it's a .zst compressed tar file)
-          echo "[INFO] Extracting package..."
-          & "C:\Program Files\7-Zip\7z.exe" x $packageFile -o"temp_extract"
-          
-          # Extract the inner tar file
-          $tarFile = Get-ChildItem "temp_extract\*.tar" | Select-Object -First 1
-          if ($tarFile) {
-            & "C:\Program Files\7-Zip\7z.exe" x $tarFile.FullName -o"temp_libpst"
-            echo "[OK] Package extracted successfully"
-            
-            # Copy readpst.exe and its dependencies
-            if (Test-Path "temp_libpst\mingw64\bin\readpst.exe") {
-              Copy-Item "temp_libpst\mingw64\bin\readpst.exe" "build\bin\readpst.exe"
-              echo "[OK] Copied readpst.exe"
-            }
-            
-            if (Test-Path "temp_libpst\mingw64\bin\libpst-4.dll") {
-              Copy-Item "temp_libpst\mingw64\bin\libpst-4.dll" "build\bin\libpst-4.dll"
-              echo "[OK] Copied libpst-4.dll"
-            }
-            
-            # Verify the files
-            if (Test-Path "build\bin\readpst.exe") {
-              $fileSize = (Get-Item "build\bin\readpst.exe").Length
-              echo "[OK] readpst.exe verified (Size: $fileSize bytes)"
-            } else {
-              throw "readpst.exe not found after extraction"
-            }
-          } else {
-            throw "No tar file found in extracted package"
-          }
-        }
-        catch {
-          echo "[ERROR] Failed to download or extract readpst: $_"
-          echo "[ERROR] Build will fail - PST extraction is essential for this application"
-          exit 1
-        }
-        finally {
-          # Cleanup
-          if (Test-Path $packageFile) { Remove-Item $packageFile -Force }
-          if (Test-Path "temp_extract") { Remove-Item "temp_extract" -Recurse -Force }
-          if (Test-Path "temp_libpst") { Remove-Item "temp_libpst" -Recurse -Force }
-        }
+        # Also copy common runtime DLLs that might be needed
+        for dll in libiconv-2.dll libintl-8.dll libgcc_s_seh-1.dll libwinpthread-1.dll zlib1.dll; do
+          if [ -f "/mingw64/bin/$dll" ]; then
+            cp "/mingw64/bin/$dll" build/bin/
+            echo "Copied: $dll"
+          fi
+        done
+        
+        echo ""
+        echo "Files in build/bin:"
+        ls -la build/bin/
 
     - name: Download Poppler for Windows
       run: |
