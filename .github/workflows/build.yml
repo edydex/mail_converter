@@ -71,14 +71,13 @@ jobs:
         update: false
         install: >-
           mingw-w64-x86_64-libpst
-          mingw-w64-x86_64-gtk3
           mingw-w64-x86_64-pango
-          mingw-w64-x86_64-gdk-pixbuf2
+          mingw-w64-x86_64-glib2
 
-    - name: Copy readpst and GTK dependencies from MSYS2
+    - name: Copy MSYS2 binaries and dependencies
       shell: msys2 {0}
       run: |
-        echo "Copying readpst.exe and GTK libraries..."
+        echo "Copying readpst.exe and Pango libraries for WeasyPrint..."
         mkdir -p build/bin
         mkdir -p build/gtk
         
@@ -94,74 +93,48 @@ jobs:
           fi
         done
         
-        # Copy GTK and related libraries for WeasyPrint
-        # These are needed for WeasyPrint to render HTML to PDF
+        # Copy Pango and dependencies for WeasyPrint (to gtk folder)
+        # WeasyPrint uses WEASYPRINT_DLL_DIRECTORIES to find these
         echo ""
-        echo "Copying GTK libraries for WeasyPrint..."
+        echo "Copying Pango libraries for WeasyPrint..."
         
-        # Copy all GTK-related DLLs
-        for dll in /mingw64/bin/libgtk-3-0.dll \
-                   /mingw64/bin/libgdk-3-0.dll \
+        # Start with Pango core libs
+        for dll in /mingw64/bin/libpango*.dll \
                    /mingw64/bin/libgobject-2.0-0.dll \
                    /mingw64/bin/libglib-2.0-0.dll \
                    /mingw64/bin/libgio-2.0-0.dll \
-                   /mingw64/bin/libcairo-2.dll \
-                   /mingw64/bin/libcairo-gobject-2.dll \
-                   /mingw64/bin/libpango-1.0-0.dll \
-                   /mingw64/bin/libpangocairo-1.0-0.dll \
-                   /mingw64/bin/libpangoft2-1.0-0.dll \
-                   /mingw64/bin/libpangowin32-1.0-0.dll \
-                   /mingw64/bin/libgdk_pixbuf-2.0-0.dll \
                    /mingw64/bin/libfontconfig-1.dll \
                    /mingw64/bin/libfreetype-6.dll \
                    /mingw64/bin/libharfbuzz-0.dll \
                    /mingw64/bin/libfribidi-0.dll \
-                   /mingw64/bin/libpixman-1-0.dll \
-                   /mingw64/bin/libpng16-16.dll \
-                   /mingw64/bin/librsvg-2-2.dll \
-                   /mingw64/bin/libxml2-2.dll; do
+                   /mingw64/bin/libcairo-2.dll \
+                   /mingw64/bin/libcairo-gobject-2.dll; do
           if [ -f "$dll" ]; then
             cp "$dll" build/gtk/
-            echo "Copied to gtk: $(basename $dll)"
+            echo "Copied: $(basename $dll)"
           fi
         done
         
-        # Copy ALL their dependencies recursively
-        for dll in build/gtk/*.dll; do
-          for dep in $(ldd "$dll" 2>/dev/null | grep mingw64 | awk '{print $3}'); do
-            if [ -f "$dep" ] && [ ! -f "build/gtk/$(basename $dep)" ]; then
-              cp "$dep" build/gtk/
-              echo "Copied dependency: $(basename $dep)"
-            fi
+        # Recursively copy ALL dependencies
+        echo ""
+        echo "Copying dependencies..."
+        for i in 1 2 3; do  # Multiple passes to get nested deps
+          for dll in build/gtk/*.dll; do
+            for dep in $(ldd "$dll" 2>/dev/null | grep mingw64 | awk '{print $3}'); do
+              if [ -f "$dep" ] && [ ! -f "build/gtk/$(basename $dep)" ]; then
+                cp "$dep" build/gtk/
+                echo "Copied dependency: $(basename $dep)"
+              fi
+            done
           done
         done
         
-        # Copy GDK-Pixbuf loaders (needed for image handling)
-        if [ -d "/mingw64/lib/gdk-pixbuf-2.0" ]; then
-          cp -r /mingw64/lib/gdk-pixbuf-2.0 build/gtk/
-          echo "Copied gdk-pixbuf loaders"
-        fi
-        
-        # Copy fontconfig config
-        if [ -d "/mingw64/etc/fonts" ]; then
-          mkdir -p build/gtk/etc
-          cp -r /mingw64/etc/fonts build/gtk/etc/
-          echo "Copied fontconfig"
-        fi
-        
-        # Copy GLib schemas
-        if [ -d "/mingw64/share/glib-2.0/schemas" ]; then
-          mkdir -p build/gtk/share/glib-2.0
-          cp -r /mingw64/share/glib-2.0/schemas build/gtk/share/glib-2.0/
-          echo "Copied GLib schemas"
-        fi
-        
         echo ""
-        echo "Files in build/bin:"
+        echo "=== Files in build/bin: ==="
         ls -la build/bin/
         echo ""
-        echo "Files in build/gtk:"
-        ls -la build/gtk/
+        echo "=== Files in build/gtk ($(ls build/gtk/*.dll 2>/dev/null | wc -l) DLLs): ==="
+        ls build/gtk/
 
     - name: Download Poppler for Windows
       run: |

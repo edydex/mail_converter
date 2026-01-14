@@ -26,52 +26,27 @@ BUILD_DIR = PROJECT_ROOT / 'build'
 binaries_list = []
 datas_list = []
 
-# Add readpst.exe and libpst DLL for Windows
+# Add readpst.exe and Pango/GTK DLLs for Windows
 if sys.platform == 'win32':
-    readpst_path = BUILD_DIR / 'bin' / 'readpst.exe'
-    libpst_path = BUILD_DIR / 'bin' / 'libpst-4.dll'
-    
-    if readpst_path.exists():
-        binaries_list.append((str(readpst_path), 'bin'))
-    if libpst_path.exists():
-        binaries_list.append((str(libpst_path), 'bin'))
-    
-    # Add ALL DLLs from bin directory (readpst dependencies)
+    # Add ALL DLLs from bin directory (readpst and its dependencies)
     bin_dir = BUILD_DIR / 'bin'
     if bin_dir.exists():
-        for dll in bin_dir.glob('*.dll'):
-            if not any(dll.name == existing[0].split(os.sep)[-1] for existing in binaries_list):
-                binaries_list.append((str(dll), 'bin'))
+        for f in bin_dir.glob('*'):
+            if f.suffix.lower() in ('.dll', '.exe'):
+                binaries_list.append((str(f), 'bin'))
     
-    # Add GTK libraries for WeasyPrint
+    # Add Pango/GTK DLLs for WeasyPrint (goes to 'gtk' folder)
     gtk_dir = BUILD_DIR / 'gtk'
     if gtk_dir.exists():
-        # Add all DLLs from gtk directory
         for dll in gtk_dir.glob('*.dll'):
             binaries_list.append((str(dll), 'gtk'))
-        
-        # Add gdk-pixbuf loaders
-        pixbuf_dir = gtk_dir / 'gdk-pixbuf-2.0'
-        if pixbuf_dir.exists():
-            datas_list.append((str(pixbuf_dir), 'gtk/gdk-pixbuf-2.0'))
-        
-        # Add fontconfig
-        fonts_dir = gtk_dir / 'etc' / 'fonts'
-        if fonts_dir.exists():
-            datas_list.append((str(fonts_dir), 'gtk/etc/fonts'))
-        
-        # Add GLib schemas
-        schemas_dir = gtk_dir / 'share' / 'glib-2.0' / 'schemas'
-        if schemas_dir.exists():
-            datas_list.append((str(schemas_dir), 'gtk/share/glib-2.0/schemas'))
     
-    # Add poppler binaries
+    # Add poppler binaries for PDF processing
     poppler_bin = BUILD_DIR / 'poppler' / 'poppler-24.08.0' / 'Library' / 'bin'
     if poppler_bin.exists():
-        for dll in poppler_bin.glob('*.dll'):
-            binaries_list.append((str(dll), 'poppler'))
-        for exe in poppler_bin.glob('*.exe'):
-            binaries_list.append((str(exe), 'poppler'))
+        for f in poppler_bin.glob('*'):
+            if f.suffix.lower() in ('.dll', '.exe'):
+                binaries_list.append((str(f), 'poppler'))
 
 # Add assets if they exist
 if (PROJECT_ROOT / 'assets').exists():
@@ -126,7 +101,7 @@ exe = EXE(
     upx=True,
     upx_exclude=[],
     runtime_tmpdir=None,
-    console=False,  # Set to True for debugging
+    console=True,  # Show console for debugging - change to False for release
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,
