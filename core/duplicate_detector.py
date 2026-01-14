@@ -180,19 +180,24 @@ class DuplicateDetector:
                 if self._meets_certainty(DuplicateCertainty.EXACT):
                     return match
         
-        # Check by sender + timestamp + subject (HIGH certainty)
+        # Check by sender + timestamp + subject + SAME CONTENT HASH (HIGH certainty)
+        # This prevents false positives from automated reports sent multiple times
+        # with different content but same subject line
         sts_key = fingerprint.get_sender_timestamp_subject_key()
         if sts_key in self._sender_ts_subject:
             original_id = self._sender_ts_subject[sts_key]
             if original_id != fingerprint.id:
-                match = DuplicateMatch(
-                    original_id=original_id,
-                    duplicate_id=fingerprint.id,
-                    certainty=DuplicateCertainty.HIGH,
-                    reason="Same sender, timestamp, and subject"
-                )
-                if self._meets_certainty(DuplicateCertainty.HIGH):
-                    return match
+                # Also verify content hash matches for HIGH certainty
+                original = self._fingerprints.get(original_id)
+                if original and original.content_hash == fingerprint.content_hash:
+                    match = DuplicateMatch(
+                        original_id=original_id,
+                        duplicate_id=fingerprint.id,
+                        certainty=DuplicateCertainty.HIGH,
+                        reason="Same sender, timestamp, subject, and content"
+                    )
+                    if self._meets_certainty(DuplicateCertainty.HIGH):
+                        return match
         
         # Check by sender + subject within time window (MEDIUM certainty)
         ss_key = fingerprint.get_sender_subject_key()
