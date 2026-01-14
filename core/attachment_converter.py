@@ -121,18 +121,31 @@ class AttachmentConverter:
         """Check for required external dependencies."""
         self.has_tesseract = shutil.which("tesseract") is not None
         
-        # Check for LibreOffice (including macOS app bundle location)
+        # Check for LibreOffice (including macOS app bundle and Windows locations)
         macos_libreoffice = "/Applications/LibreOffice.app/Contents/MacOS/soffice"
-        self.has_libreoffice = (
-            shutil.which("libreoffice") is not None or 
-            shutil.which("soffice") is not None or
-            os.path.isfile(macos_libreoffice)
-        )
+        windows_libreoffice_paths = [
+            r"C:\Program Files\LibreOffice\program\soffice.exe",
+            r"C:\Program Files (x86)\LibreOffice\program\soffice.exe",
+        ]
+        
+        # Find LibreOffice executable
         self.libreoffice_path = (
             shutil.which("libreoffice") or 
             shutil.which("soffice") or 
             (macos_libreoffice if os.path.isfile(macos_libreoffice) else None)
         )
+        
+        # Check Windows paths if not found yet
+        if not self.libreoffice_path:
+            for win_path in windows_libreoffice_paths:
+                if os.path.isfile(win_path):
+                    self.libreoffice_path = win_path
+                    break
+        
+        self.has_libreoffice = self.libreoffice_path is not None
+        
+        if self.has_libreoffice:
+            logger.info(f"LibreOffice found at: {self.libreoffice_path}")
         
         # Check for Poppler (used by pdf2image)
         self.poppler_path = self._find_poppler()
@@ -518,6 +531,16 @@ class AttachmentConverter:
         try:
             reader = PdfReader(str(input_path))
             
+            # Check if PDF is encrypted
+            if reader.is_encrypted:
+                # Try empty password first (some PDFs are "encrypted" with no password)
+                try:
+                    reader.decrypt('')
+                except Exception:
+                    # Password protected - just copy as-is and embed
+                    logger.warning(f"PDF is password-protected: {input_path.name}")
+                    return self._create_embedded_attachment_pdf(input_path, output_path, '.pdf')
+            
             # Check if PDF has text
             has_text = False
             for page in reader.pages[:3]:  # Check first 3 pages
@@ -577,7 +600,8 @@ class AttachmentConverter:
             )
         
         except Exception as e:
-            # If OCR fails, try to just copy
+            logger.warning(f"PDF processing error for {input_path.name}: {e}")
+            # If PDF is corrupted or has issues, try to just copy it
             try:
                 shutil.copy(input_path, output_path)
                 return ConversionResult(
@@ -585,11 +609,13 @@ class AttachmentConverter:
                     output_path=output_path,
                     original_path=input_path,
                     original_type='.pdf',
-                    message=f"PDF copied without OCR: {e}",
+                    message=f"PDF copied as-is (processing error: {e})",
                     ocr_applied=False
                 )
-            except:
-                raise
+            except Exception as copy_error:
+                logger.error(f"Failed to copy PDF {input_path.name}: {copy_error}")
+                # Last resort: embed the original file
+                return self._create_embedded_attachment_pdf(input_path, output_path, '.pdf')
     
     def _ocr_pdf(self, input_path: Path, output_path: Path) -> bool:
         """Apply OCR to a PDF file."""
@@ -741,9 +767,10 @@ class AttachmentConverter:
                 raise RuntimeError(f"LibreOffice did not produce output: {result.stderr}")
         
         except subprocess.TimeoutExpired:
-            raise RuntimeError("LibreOffice conversion timed out")
+            logger.warning(f"LibreOffice timed out converting {input_path.name} (>120s)")
+            return self._fallback_document_convert(input_path, output_path, ext)
         except Exception as e:
-            logger.warning(f"LibreOffice conversion failed: {e}")
+            logger.warning(f"LibreOffice conversion failed for {input_path.name}: {e}")
             return self._fallback_document_convert(input_path, output_path, ext)
     
     def _fallback_document_convert(self, input_path: Path, output_path: Path, ext: str) -> ConversionResult:

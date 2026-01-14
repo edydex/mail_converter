@@ -207,6 +207,38 @@ class PDFMerger:
         except Exception as e:
             logger.warning(f"Could not add TOC links: {e}")
     
+    def _add_bookmarks(self, pdf: pikepdf.Pdf, toc_entries: List[Tuple[str, int]]) -> None:
+        """
+        Add PDF bookmarks (outline) for easy navigation.
+        
+        Args:
+            pdf: The pikepdf.Pdf object to add bookmarks to
+            toc_entries: List of (title, page_number) tuples (1-based page numbers)
+        """
+        try:
+            with pdf.open_outline() as outline:
+                for title, page_num in toc_entries:
+                    # Clean up the title for bookmark display
+                    # Remove timestamp prefix if present (YYYYMMDD_HHMMSS_)
+                    display_title = title
+                    if len(title) > 16 and title[8] == '_' and title[15] == '_':
+                        # Likely has timestamp prefix, extract the subject part
+                        display_title = title[16:]  # Skip "YYYYMMDD_HHMMSS_"
+                    
+                    # Truncate very long titles
+                    if len(display_title) > 80:
+                        display_title = display_title[:77] + "..."
+                    
+                    # Create bookmark pointing to the page (0-based index for pikepdf)
+                    page_idx = page_num - 1
+                    if 0 <= page_idx < len(pdf.pages):
+                        bookmark = pikepdf.OutlineItem(display_title, page_idx)
+                        outline.root.append(bookmark)
+                        
+            logger.info(f"Added {len(toc_entries)} bookmarks to PDF")
+        except Exception as e:
+            logger.warning(f"Could not add bookmarks: {e}")
+    
     def _scale_page_to_target(self, page) -> None:
         """
         Scale a PDF page to match the target page size.
@@ -450,8 +482,15 @@ class PDFMerger:
             # Add clickable links to TOC entries
             self._add_toc_links(final_pdf, toc_pages, adjusted_toc_entries)
             
+            # Add PDF bookmarks/outline for easy navigation
+            self._add_bookmarks(final_pdf, adjusted_toc_entries)
+            
             merged_pdf = final_pdf
             total_pages += toc_pages
+        else:
+            # No TOC, but still add bookmarks if we have entries
+            if toc_entries:
+                self._add_bookmarks(merged_pdf, toc_entries)
         
         # Write output with linearization for better compatibility
         try:
