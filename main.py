@@ -39,29 +39,63 @@ def setup_logging():
 def check_dependencies():
     """Check for required dependencies and warn if missing."""
     import shutil
+    import platform
     
     warnings = []
+    system = platform.system()
     
     # Check for readpst
-    if not shutil.which("readpst"):
-        warnings.append(
-            "readpst (libpst) not found. PST extraction will not work.\n"
-            "Install with: brew install libpst (macOS) or apt-get install pst-utils (Linux)"
-        )
+    readpst_found = False
     
-    # Check for tesseract
-    if not shutil.which("tesseract"):
-        warnings.append(
-            "Tesseract not found. OCR will be disabled.\n"
-            "Install with: brew install tesseract (macOS) or apt-get install tesseract-ocr (Linux)"
-        )
+    # First check if bundled (PyInstaller)
+    if hasattr(sys, '_MEIPASS'):
+        bundled_paths = [
+            os.path.join(sys._MEIPASS, 'bin', 'readpst.exe'),
+            os.path.join(sys._MEIPASS, 'readpst.exe'),
+            os.path.join(sys._MEIPASS, 'bin', 'readpst'),
+            os.path.join(sys._MEIPASS, 'readpst'),
+        ]
+        for path in bundled_paths:
+            if os.path.isfile(path):
+                readpst_found = True
+                break
+    
+    # Then check system
+    if not readpst_found:
+        readpst_found = shutil.which("readpst") is not None or shutil.which("readpst.exe") is not None
+    
+    if not readpst_found:
+        if system == "Windows":
+            warnings.append(
+                "readpst (libpst) not found. PST extraction will not work.\n"
+                "This should be bundled with the application - try re-downloading."
+            )
+        else:
+            warnings.append(
+                "readpst (libpst) not found. PST extraction will not work.\n"
+                "Install with: brew install libpst (macOS) or apt-get install pst-utils (Linux)"
+            )
+    
+    # Check for tesseract (optional, don't warn on Windows - it's complicated there)
+    if system != "Windows":
+        if not shutil.which("tesseract"):
+            warnings.append(
+                "Tesseract not found. OCR will be disabled.\n"
+                "Install with: brew install tesseract (macOS) or apt-get install tesseract-ocr (Linux)"
+            )
     
     # Check for LibreOffice (including macOS app bundle location)
     macos_libreoffice = "/Applications/LibreOffice.app/Contents/MacOS/soffice"
+    windows_libreoffice_paths = [
+        r"C:\Program Files\LibreOffice\program\soffice.exe",
+        r"C:\Program Files (x86)\LibreOffice\program\soffice.exe",
+    ]
+    
     has_libreoffice = (
         shutil.which("libreoffice") or 
         shutil.which("soffice") or
-        os.path.isfile(macos_libreoffice)
+        os.path.isfile(macos_libreoffice) or
+        any(os.path.isfile(p) for p in windows_libreoffice_paths)
     )
     if not has_libreoffice:
         warnings.append(

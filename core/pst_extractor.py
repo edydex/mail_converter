@@ -53,15 +53,23 @@ class PSTExtractor:
         if hasattr(sys, '_MEIPASS'):
             # Running as compiled executable - look for bundled readpst
             if system == "Windows":
-                bundled_path = os.path.join(sys._MEIPASS, 'bin', 'readpst.exe')
+                # Check both bin/ subfolder and root
+                possible_bundled = [
+                    os.path.join(sys._MEIPASS, 'bin', 'readpst.exe'),
+                    os.path.join(sys._MEIPASS, 'readpst.exe'),
+                ]
             else:
-                bundled_path = os.path.join(sys._MEIPASS, 'bin', 'readpst')
+                possible_bundled = [
+                    os.path.join(sys._MEIPASS, 'bin', 'readpst'),
+                    os.path.join(sys._MEIPASS, 'readpst'),
+                ]
             
-            if os.path.isfile(bundled_path):
-                logger.info(f"Using bundled readpst at: {bundled_path}")
-                return bundled_path
-            else:
-                logger.warning(f"Bundled readpst not found at: {bundled_path}, falling back to system")
+            for bundled_path in possible_bundled:
+                if os.path.isfile(bundled_path):
+                    logger.info(f"Using bundled readpst at: {bundled_path}")
+                    return bundled_path
+            
+            logger.warning(f"Bundled readpst not found, falling back to system")
         
         # Fall back to system installation
         possible_paths = []

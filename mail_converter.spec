@@ -32,9 +32,9 @@ if sys.platform == 'win32':
     libpst_path = BUILD_DIR / 'bin' / 'libpst-4.dll'
     
     if readpst_path.exists():
-        binaries_list.append((str(readpst_path), '.'))
+        binaries_list.append((str(readpst_path), 'bin'))
     if libpst_path.exists():
-        binaries_list.append((str(libpst_path), '.'))
+        binaries_list.append((str(libpst_path), 'bin'))
     
     # Add poppler binaries
     poppler_bin = BUILD_DIR / 'poppler' / 'poppler-24.08.0' / 'Library' / 'bin'
