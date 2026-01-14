@@ -1048,10 +1048,16 @@ class AttachmentConverter:
     # === HTML Conversion ===
     
     def _convert_html(self, input_path: Path, output_path: Path) -> ConversionResult:
-        """Convert HTML file to PDF using WeasyPrint."""
+        """Convert HTML file to PDF using WeasyPrint, or fallback to basic conversion."""
+        # Try WeasyPrint first (may not be available on Windows)
         try:
             from weasyprint import HTML, CSS
-            
+        except (ImportError, OSError, Exception):
+            # WeasyPrint not available - use fallback
+            logger.info("WeasyPrint not available, using text fallback for HTML")
+            return self._html_text_fallback(input_path, output_path)
+        
+        try:
             content = self._read_text_file(input_path)
             
             # Basic CSS for reasonable rendering

@@ -17,12 +17,15 @@ from datetime import datetime
 import logging
 
 # Check for WeasyPrint availability
+# WeasyPrint requires GTK/GLib native libraries which may not be available on Windows
 WEASYPRINT_AVAILABLE = False
 try:
     from weasyprint import HTML, CSS
     from weasyprint.text.fonts import FontConfiguration
     WEASYPRINT_AVAILABLE = True
-except ImportError:
+except (ImportError, OSError, Exception):
+    # ImportError: package not installed
+    # OSError: native libraries (libgobject, etc.) not found on Windows
     pass
 
 from reportlab.lib.pagesizes import letter, A4
