@@ -427,6 +427,95 @@ class EmailToPDFConverter:
     </div>
 </div>
 """
+
+    def _fix_encoding_issues(self, text: str) -> str:
+        """
+        Fix common encoding issues in email text.
+        
+        Handles:
+        - Windows-1252 "smart quotes" and special characters
+        - Unicode replacement characters (U+FFFD / �)
+        - Mojibake from incorrect encoding/decoding
+        - Control characters that render as boxes
+        """
+        if not text:
+            return ""
+        
+        # Map of problematic characters to their ASCII equivalents
+        # This handles both the raw Windows-1252 bytes AND their Unicode equivalents
+        char_replacements = {
+            # Unicode replacement character - just remove it
+            '\ufffd': '',
+            '�': '',
+            
+            # Windows-1252 "smart" punctuation -> ASCII equivalents
+            # Left/Right single quotes -> apostrophe
+            '\u2018': "'",  # '
+            '\u2019': "'",  # '
+            '\u201a': "'",  # ‚ (single low-9 quote)
+            
+            # Left/Right double quotes -> straight quote
+            '\u201c': '"',  # "
+            '\u201d': '"',  # "
+            '\u201e': '"',  # „ (double low-9 quote)
+            
+            # Dashes
+            '\u2013': '-',  # en dash –
+            '\u2014': '--', # em dash —
+            '\u2015': '--', # horizontal bar
+            
+            # Ellipsis
+            '\u2026': '...',  # …
+            
+            # Bullets and symbols
+            '\u2022': '*',  # bullet •
+            '\u2023': '>',  # triangular bullet
+            '\u25aa': '*',  # small black square
+            '\u25cf': '*',  # black circle
+            '\u2219': '*',  # bullet operator
+            
+            # Trademark/copyright symbols (keep these as-is but ensure they work)
+            '\u2122': '(TM)',  # ™
+            '\u00a9': '(c)',   # ©
+            '\u00ae': '(R)',   # ®
+            
+            # Non-breaking spaces and other whitespace
+            '\u00a0': ' ',   # NBSP
+            '\u00ad': '',    # soft hyphen - remove
+            '\u200b': '',    # zero-width space
+            '\u200c': '',    # zero-width non-joiner
+            '\u200d': '',    # zero-width joiner
+            '\ufeff': '',    # BOM / zero-width no-break space
+            
+            # Windows-1252 control characters (0x80-0x9F range)
+            # These appear when text is incorrectly decoded
+            '\x85': '...',  # ellipsis
+            '\x91': "'",    # left single quote
+            '\x92': "'",    # right single quote  
+            '\x93': '"',    # left double quote
+            '\x94': '"',    # right double quote
+            '\x95': '*',    # bullet
+            '\x96': '-',    # en dash
+            '\x97': '--',   # em dash
+            '\x99': '(TM)', # trademark
+            
+            # Fraction characters that may not render
+            '\u00bc': '1/4',
+            '\u00bd': '1/2',
+            '\u00be': '3/4',
+        }
+        
+        for bad_char, replacement in char_replacements.items():
+            text = text.replace(bad_char, replacement)
+        
+        # Also handle the case where we have mangled multi-byte sequences
+        # Common pattern: Â followed by special char (UTF-8 decoded as Latin-1)
+        text = re.sub(r'Â\s*([''""•–—…])', r'\1', text)
+        
+        # Remove any remaining control characters (except newlines and tabs)
+        text = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', text)
+        
+        return text
     
     def _sanitize_email_html(self, html_content: str) -> str:
         """
@@ -443,22 +532,8 @@ class EmailToPDFConverter:
         if not html_content:
             return ""
         
-        # Fix Windows-1252 control characters that weren't properly decoded
-        # These are characters in the 0x80-0x9F range that should be mapped to Unicode
-        win1252_map = {
-            '\x85': '…',   # U+0085 -> ellipsis
-            '\x91': ''',   # U+0091 -> left single quote
-            '\x92': ''',   # U+0092 -> right single quote (apostrophe)
-            '\x93': '"',   # U+0093 -> left double quote
-            '\x94': '"',   # U+0094 -> right double quote
-            '\x95': '•',   # U+0095 -> bullet
-            '\x96': '–',   # U+0096 -> en dash
-            '\x97': '—',   # U+0097 -> em dash
-            '\x99': '™',   # U+0099 -> trademark
-            '\xa0': ' ',   # non-breaking space
-        }
-        for bad_char, good_char in win1252_map.items():
-            html_content = html_content.replace(bad_char, good_char)
+        # First, normalize the text encoding
+        html_content = self._fix_encoding_issues(html_content)
         
         # Remove decorative timeline divs (empty divs with border-radius that render as dots)
         # These are typically: <div style="...border-radius:10px..."></div>

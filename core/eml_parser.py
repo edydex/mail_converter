@@ -382,11 +382,22 @@ class EMLParser:
     
     def _decode_payload(self, payload: bytes, charset: str) -> str:
         """Decode payload bytes to string with fallback encodings."""
-        encodings = [charset, 'utf-8', 'latin-1', 'cp1252', 'ascii']
+        # Try declared charset first, then common fallbacks
+        encodings = [charset, 'utf-8', 'cp1252', 'latin-1', 'ascii']
         
         for encoding in encodings:
+            if not encoding:
+                continue
             try:
-                return payload.decode(encoding)
+                decoded = payload.decode(encoding)
+                # If we decoded as UTF-8 but got replacement chars, try cp1252
+                # This handles emails that claim UTF-8 but are actually Windows-1252
+                if encoding == 'utf-8' and '\ufffd' in decoded:
+                    try:
+                        return payload.decode('cp1252')
+                    except (UnicodeDecodeError, LookupError):
+                        pass
+                return decoded
             except (UnicodeDecodeError, LookupError):
                 continue
         
