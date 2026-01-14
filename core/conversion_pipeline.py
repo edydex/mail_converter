@@ -373,7 +373,13 @@ class ConversionPipeline:
                     # Skip "Deleted Items" folder if configured
                     if self.config.skip_deleted_items:
                         folder_lower = folder_path.lower()
-                        if "deleted items" in folder_lower or "deleted" in folder_lower.split("/")[-1] if "/" in folder_lower else folder_lower == "deleted":
+                        folder_parts = folder_lower.replace("\\", "/").split("/")
+                        is_deleted = (
+                            "deleted items" in folder_lower or
+                            "deleted" in folder_parts or
+                            any(part.startswith("deleted") for part in folder_parts)
+                        )
+                        if is_deleted:
                             logger.info(f"Skipping email from Deleted Items: {eml_path.name}")
                             continue
                     

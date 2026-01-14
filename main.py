@@ -15,6 +15,43 @@ PROJECT_ROOT = Path(__file__).parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 
+def setup_bundled_environment():
+    """Set up environment for bundled GTK libraries on Windows."""
+    if not hasattr(sys, '_MEIPASS'):
+        return  # Not running as bundled app
+    
+    if sys.platform != 'win32':
+        return  # Only needed on Windows
+    
+    base_path = Path(sys._MEIPASS)
+    gtk_path = base_path / 'gtk'
+    
+    if not gtk_path.exists():
+        return  # No GTK libraries bundled
+    
+    # Add GTK to PATH so DLLs can be found
+    os.environ['PATH'] = str(gtk_path) + os.pathsep + os.environ.get('PATH', '')
+    
+    # Set GDK-Pixbuf loader path
+    pixbuf_loaders = gtk_path / 'gdk-pixbuf-2.0'
+    if pixbuf_loaders.exists():
+        os.environ['GDK_PIXBUF_MODULE_FILE'] = str(pixbuf_loaders / 'loaders.cache')
+    
+    # Set fontconfig path
+    fonts_dir = gtk_path / 'etc' / 'fonts'
+    if fonts_dir.exists():
+        os.environ['FONTCONFIG_PATH'] = str(fonts_dir)
+    
+    # Set GLib schemas path
+    schemas_dir = gtk_path / 'share' / 'glib-2.0' / 'schemas'
+    if schemas_dir.exists():
+        os.environ['GSETTINGS_SCHEMA_DIR'] = str(schemas_dir)
+
+
+# Set up bundled environment BEFORE any other imports
+setup_bundled_environment()
+
+
 def setup_logging():
     """Configure application logging."""
     log_dir = PROJECT_ROOT / "logs"

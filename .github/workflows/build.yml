@@ -69,38 +69,99 @@ jobs:
       with:
         msystem: MINGW64
         update: false
-        install: mingw-w64-x86_64-libpst
+        install: >-
+          mingw-w64-x86_64-libpst
+          mingw-w64-x86_64-gtk3
+          mingw-w64-x86_64-pango
+          mingw-w64-x86_64-gdk-pixbuf2
 
-    - name: Copy readpst and dependencies from MSYS2
+    - name: Copy readpst and GTK dependencies from MSYS2
       shell: msys2 {0}
       run: |
-        echo "Copying readpst.exe and all dependencies..."
+        echo "Copying readpst.exe and GTK libraries..."
         mkdir -p build/bin
+        mkdir -p build/gtk
         
         # Copy readpst and libpst
         cp /mingw64/bin/readpst.exe build/bin/
         cp /mingw64/bin/libpst-4.dll build/bin/
         
-        # Copy all required MinGW runtime DLLs
-        # Use ldd to find dependencies and copy them
+        # Copy all DLL dependencies for readpst
         for dll in $(ldd /mingw64/bin/readpst.exe | grep mingw64 | awk '{print $3}'); do
           if [ -f "$dll" ]; then
             cp "$dll" build/bin/
-            echo "Copied: $(basename $dll)"
+            echo "Copied to bin: $(basename $dll)"
           fi
         done
         
-        # Also copy common runtime DLLs that might be needed
-        for dll in libiconv-2.dll libintl-8.dll libgcc_s_seh-1.dll libwinpthread-1.dll zlib1.dll; do
-          if [ -f "/mingw64/bin/$dll" ]; then
-            cp "/mingw64/bin/$dll" build/bin/
-            echo "Copied: $dll"
+        # Copy GTK and related libraries for WeasyPrint
+        # These are needed for WeasyPrint to render HTML to PDF
+        echo ""
+        echo "Copying GTK libraries for WeasyPrint..."
+        
+        # Copy all GTK-related DLLs
+        for dll in /mingw64/bin/libgtk-3-0.dll \
+                   /mingw64/bin/libgdk-3-0.dll \
+                   /mingw64/bin/libgobject-2.0-0.dll \
+                   /mingw64/bin/libglib-2.0-0.dll \
+                   /mingw64/bin/libgio-2.0-0.dll \
+                   /mingw64/bin/libcairo-2.dll \
+                   /mingw64/bin/libcairo-gobject-2.dll \
+                   /mingw64/bin/libpango-1.0-0.dll \
+                   /mingw64/bin/libpangocairo-1.0-0.dll \
+                   /mingw64/bin/libpangoft2-1.0-0.dll \
+                   /mingw64/bin/libpangowin32-1.0-0.dll \
+                   /mingw64/bin/libgdk_pixbuf-2.0-0.dll \
+                   /mingw64/bin/libfontconfig-1.dll \
+                   /mingw64/bin/libfreetype-6.dll \
+                   /mingw64/bin/libharfbuzz-0.dll \
+                   /mingw64/bin/libfribidi-0.dll \
+                   /mingw64/bin/libpixman-1-0.dll \
+                   /mingw64/bin/libpng16-16.dll \
+                   /mingw64/bin/librsvg-2-2.dll \
+                   /mingw64/bin/libxml2-2.dll; do
+          if [ -f "$dll" ]; then
+            cp "$dll" build/gtk/
+            echo "Copied to gtk: $(basename $dll)"
           fi
         done
+        
+        # Copy ALL their dependencies recursively
+        for dll in build/gtk/*.dll; do
+          for dep in $(ldd "$dll" 2>/dev/null | grep mingw64 | awk '{print $3}'); do
+            if [ -f "$dep" ] && [ ! -f "build/gtk/$(basename $dep)" ]; then
+              cp "$dep" build/gtk/
+              echo "Copied dependency: $(basename $dep)"
+            fi
+          done
+        done
+        
+        # Copy GDK-Pixbuf loaders (needed for image handling)
+        if [ -d "/mingw64/lib/gdk-pixbuf-2.0" ]; then
+          cp -r /mingw64/lib/gdk-pixbuf-2.0 build/gtk/
+          echo "Copied gdk-pixbuf loaders"
+        fi
+        
+        # Copy fontconfig config
+        if [ -d "/mingw64/etc/fonts" ]; then
+          mkdir -p build/gtk/etc
+          cp -r /mingw64/etc/fonts build/gtk/etc/
+          echo "Copied fontconfig"
+        fi
+        
+        # Copy GLib schemas
+        if [ -d "/mingw64/share/glib-2.0/schemas" ]; then
+          mkdir -p build/gtk/share/glib-2.0
+          cp -r /mingw64/share/glib-2.0/schemas build/gtk/share/glib-2.0/
+          echo "Copied GLib schemas"
+        fi
         
         echo ""
         echo "Files in build/bin:"
         ls -la build/bin/
+        echo ""
+        echo "Files in build/gtk:"
+        ls -la build/gtk/
 
     - name: Download Poppler for Windows
       run: |

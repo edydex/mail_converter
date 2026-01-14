@@ -36,6 +36,35 @@ if sys.platform == 'win32':
     if libpst_path.exists():
         binaries_list.append((str(libpst_path), 'bin'))
     
+    # Add ALL DLLs from bin directory (readpst dependencies)
+    bin_dir = BUILD_DIR / 'bin'
+    if bin_dir.exists():
+        for dll in bin_dir.glob('*.dll'):
+            if not any(dll.name == existing[0].split(os.sep)[-1] for existing in binaries_list):
+                binaries_list.append((str(dll), 'bin'))
+    
+    # Add GTK libraries for WeasyPrint
+    gtk_dir = BUILD_DIR / 'gtk'
+    if gtk_dir.exists():
+        # Add all DLLs from gtk directory
+        for dll in gtk_dir.glob('*.dll'):
+            binaries_list.append((str(dll), 'gtk'))
+        
+        # Add gdk-pixbuf loaders
+        pixbuf_dir = gtk_dir / 'gdk-pixbuf-2.0'
+        if pixbuf_dir.exists():
+            datas_list.append((str(pixbuf_dir), 'gtk/gdk-pixbuf-2.0'))
+        
+        # Add fontconfig
+        fonts_dir = gtk_dir / 'etc' / 'fonts'
+        if fonts_dir.exists():
+            datas_list.append((str(fonts_dir), 'gtk/etc/fonts'))
+        
+        # Add GLib schemas
+        schemas_dir = gtk_dir / 'share' / 'glib-2.0' / 'schemas'
+        if schemas_dir.exists():
+            datas_list.append((str(schemas_dir), 'gtk/share/glib-2.0/schemas'))
+    
     # Add poppler binaries
     poppler_bin = BUILD_DIR / 'poppler' / 'poppler-24.08.0' / 'Library' / 'bin'
     if poppler_bin.exists():
