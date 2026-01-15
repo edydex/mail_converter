@@ -19,10 +19,12 @@ import logging
 # Check for WeasyPrint availability
 # WeasyPrint requires GTK/GLib native libraries which may not be available on Windows
 WEASYPRINT_AVAILABLE = False
+WEASYPRINT_DEFAULT_URL_FETCHER = None
 try:
-    from weasyprint import HTML, CSS
+    from weasyprint import HTML, CSS, default_url_fetcher
     from weasyprint.text.fonts import FontConfiguration
     WEASYPRINT_AVAILABLE = True
+    WEASYPRINT_DEFAULT_URL_FETCHER = default_url_fetcher
 except (ImportError, OSError, Exception):
     # ImportError: package not installed
     # OSError: native libraries (libgobject, etc.) not found on Windows
@@ -50,23 +52,49 @@ class EmailToPDFConverter:
     Falls back to reportlab for plain text.
     """
     
-    def __init__(self, page_size=letter, page_margin: float = 0.5):
+    def __init__(self, page_size=letter, page_margin: float = 0.5, load_remote_images: bool = False):
         """
         Initialize the email to PDF converter.
         
         Args:
             page_size: Page size (default: letter)
             page_margin: Page margin in inches (default: 0.5)
+            load_remote_images: Whether to load images from the web (default: False for security)
         """
         self.page_size = page_size
         self.page_size_name = "Letter" if page_size == letter else "A4"
         self.page_margin = page_margin
+        self.load_remote_images = load_remote_images
         self._setup_styles()
         
         if WEASYPRINT_AVAILABLE:
             logger.info("WeasyPrint available - HTML emails will render with full formatting")
+            if not self.load_remote_images:
+                logger.info("Remote image loading disabled for security")
         else:
             logger.warning("WeasyPrint not available - HTML emails will use simplified rendering")
+    
+    def _url_fetcher(self, url: str):
+        """
+        Custom URL fetcher for WeasyPrint that blocks remote URLs for security.
+        Only allows data: URLs (embedded images) and local file: URLs.
+        """
+        if url.startswith('data:'):
+            # Allow data: URLs (base64 embedded images)
+            return WEASYPRINT_DEFAULT_URL_FETCHER(url)
+        elif url.startswith('file://'):
+            # Allow local file URLs
+            return WEASYPRINT_DEFAULT_URL_FETCHER(url)
+        elif url.startswith(('http://', 'https://')):
+            # Block remote URLs - return empty result
+            logger.debug(f"Blocked remote image: {url[:100]}")
+            return {'string': b'', 'mime_type': 'image/png'}
+        else:
+            # For other URLs (relative paths, etc.), try the default fetcher
+            try:
+                return WEASYPRINT_DEFAULT_URL_FETCHER(url)
+            except Exception:
+                return {'string': b'', 'mime_type': 'image/png'}
     
     def _setup_styles(self):
         """Set up paragraph styles for the PDF (used for plain text fallback)."""
@@ -164,8 +192,13 @@ class EmailToPDFConverter:
             
             css = CSS(string=page_size_css, font_config=font_config)
             
-            html = HTML(string=html_content)
-            html.write_pdf(str(output_path), stylesheets=[css], font_config=font_config)
+            # Use custom url_fetcher to block remote images if setting is disabled
+            if self.load_remote_images:
+                html = HTML(string=html_content)
+                html.write_pdf(str(output_path), stylesheets=[css], font_config=font_config)
+            else:
+                html = HTML(string=html_content, url_fetcher=self._url_fetcher)
+                html.write_pdf(str(output_path), stylesheets=[css], font_config=font_config)
             
             logger.info(f"Created PDF with WeasyPrint: {output_path}")
             return output_path
@@ -240,17 +273,43 @@ class EmailToPDFConverter:
         
         .email-body {{
             margin-top: 20px;
+            overflow-wrap: break-word;
+            word-wrap: break-word;
         }}
         
-        /* Preserve table formatting from email */
+        /* Force all content to fit within page width */
+        * {{
+            max-width: 100% !important;
+            box-sizing: border-box;
+        }}
+        
+        /* Tables - force to fit page width regardless of inline width attributes */
         table {{
             border-collapse: collapse;
-            max-width: 100%;
+            max-width: 100% !important;
+            width: 100% !important;
+            table-layout: fixed !important;
         }}
         
         td, th {{
             padding: 4px 8px;
             vertical-align: top;
+            max-width: 100% !important;
+            overflow-wrap: break-word;
+            word-wrap: break-word;
+            word-break: break-word;
+        }}
+        
+        /* Force side-by-side table cells to stack vertically on narrow pages */
+        @media print {{
+            table {{
+                width: 100% !important;
+                table-layout: fixed !important;
+            }}
+            td, th {{
+                display: block !important;
+                width: 100% !important;
+            }}
         }}
         
         /* Style tables that have borders */
@@ -585,8 +644,11 @@ class EmailToPDFConverter:
     def _embed_inline_images(self, html_content: str, inline_images: Dict) -> str:
         """
         Replace cid: references with base64 embedded images.
-        Also processes images to preserve their original dimensions.
+        Also processes images and strips fixed widths to fit page.
         """
+        # Always strip fixed widths from tables to prevent overflow
+        html_content = self._strip_fixed_table_widths(html_content)
+        
         if not inline_images:
             return self._constrain_images_without_dimensions(html_content)
         
@@ -621,6 +683,31 @@ class EmailToPDFConverter:
         
         # Constrain images that don't have explicit dimensions
         html_content = self._constrain_images_without_dimensions(html_content)
+        
+        return html_content
+    
+    def _strip_fixed_table_widths(self, html_content: str) -> str:
+        """
+        Remove fixed width attributes from tables, tds, and other layout elements.
+        This prevents newsletter-style emails from overflowing the page.
+        """
+        # Remove ALL width attributes from tables, tds, ths (more aggressive)
+        # Matches: width="600" width='600' width=600 width="100%"
+        html_content = re.sub(
+            r'\s*width\s*=\s*["\']?[\d%]+["\']?',
+            '',
+            html_content,
+            flags=re.IGNORECASE
+        )
+        
+        # Remove inline style width declarations that use fixed pixels
+        # Matches: width: 600px; or width:600px (with or without semicolon)
+        html_content = re.sub(
+            r'width\s*:\s*\d+px\s*;?',
+            '',
+            html_content,
+            flags=re.IGNORECASE
+        )
         
         return html_content
     

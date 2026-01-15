@@ -74,9 +74,11 @@ class PipelineConfig:
     keep_individual_pdfs: bool = True
     create_combined_pdf: bool = True
     add_toc: bool = True
-    add_separators: bool = False
+    add_separators: bool = False  # Separator pages between emails
+    add_att_separators: bool = False  # Separator pages before attachments
     page_size: str = "Letter"  # "Letter" or "A4"
     page_margin: float = 0.5  # Page margin in inches
+    load_remote_images: bool = False  # Load images from the web (security concern)
     merge_folders: bool = False  # True = one combined PDF, False = separate PDF per folder
     
     # Processing
@@ -150,7 +152,10 @@ class ConversionPipeline:
             progress_callback=self._pst_progress
         )
         self.eml_parser = EMLParser()
-        self.email_converter = EmailToPDFConverter(page_margin=config.page_margin)
+        self.email_converter = EmailToPDFConverter(
+            page_margin=config.page_margin,
+            load_remote_images=config.load_remote_images
+        )
         self.attachment_converter = AttachmentConverter(
             ocr_enabled=config.ocr_enabled,
             progress_callback=self._attachment_progress
@@ -494,7 +499,7 @@ class ConversionPipeline:
                             email_pdf_path,
                             attachment_pdfs,
                             final_pdf_path,
-                            add_separators=self.config.add_separators
+                            add_separators=self.config.add_att_separators
                         )
                         
                         if not merge_result.success:

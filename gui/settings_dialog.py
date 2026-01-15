@@ -74,6 +74,24 @@ class SettingsDialog:
         
         ttk.Separator(output_frame, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=15)
         
+        # Security settings
+        security_label = ttk.Label(
+            output_frame,
+            text="Security:",
+            font=('Helvetica', 10, 'bold')
+        )
+        security_label.pack(anchor=tk.W, pady=(10, 5))
+        
+        # Load remote images
+        self.load_remote_images_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(
+            output_frame,
+            text="Load images from the web (may expose IP address)",
+            variable=self.load_remote_images_var
+        ).pack(anchor=tk.W, pady=5)
+        
+        ttk.Separator(output_frame, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=15)
+        
         # Page size
         page_frame = ttk.Frame(output_frame)
         page_frame.pack(anchor=tk.W, pady=5)
@@ -272,6 +290,7 @@ class SettingsDialog:
         self.toc_var.set(self.current.get('add_toc', True))
         self.separators_var.set(self.current.get('add_separators', False))
         self.att_separators_var.set(self.current.get('add_att_separators', False))
+        self.load_remote_images_var.set(self.current.get('load_remote_images', False))
         self.page_size_var.set(self.current.get('page_size', 'Letter'))
         self.page_margin_var.set(str(self.current.get('page_margin', 0.5)))
         self.preserve_structure_var.set(self.current.get('preserve_structure', True))
@@ -366,6 +385,7 @@ class SettingsDialog:
             'add_toc': self.toc_var.get(),
             'add_separators': self.separators_var.get(),
             'add_att_separators': self.att_separators_var.get(),
+            'load_remote_images': self.load_remote_images_var.get(),
             'page_size': self.page_size_var.get(),
             'page_margin': float(self.page_margin_var.get()),
             'preserve_structure': self.preserve_structure_var.get(),

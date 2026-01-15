@@ -22,6 +22,10 @@ from core.conversion_pipeline import (
     PipelineStage
 )
 from core.duplicate_detector import DuplicateCertainty
+from core.eml_parser import EMLParser
+from core.email_to_pdf import EmailToPDFConverter
+from core.attachment_converter import AttachmentConverter
+from core.pdf_merger import PDFMerger
 from .progress_dialog import ProgressDialog
 from .settings_dialog import SettingsDialog
 
@@ -61,6 +65,7 @@ class MainWindow:
             'add_att_separators': False,
             'page_margin': 0.5,
             'skip_deleted_items': True,
+            'load_remote_images': False,
             'date_from': None,
             'date_to': None
         }
@@ -125,8 +130,8 @@ class MainWindow:
         ttk.Separator(self.main_frame).grid(row=row, column=0, columnspan=3, sticky="ew", pady=10)
         row += 1
         
-        # PST File Selection
-        ttk.Label(self.main_frame, text="PST File:").grid(
+        # PST/EML File Selection
+        ttk.Label(self.main_frame, text="PST/EML File:").grid(
             row=row, column=0, sticky="w", pady=5
         )
         
@@ -276,7 +281,7 @@ class MainWindow:
         
         version_label = ttk.Label(
             footer_frame,
-            text="v1.0.0",
+            text="v1.1.1",
             foreground="gray"
         )
         version_label.pack(side=tk.RIGHT)
@@ -298,11 +303,13 @@ class MainWindow:
         self.root.geometry(f'{width}x{height}+{x}+{y}')
     
     def _browse_pst(self):
-        """Open file dialog to select PST file."""
+        """Open file dialog to select PST or EML file."""
         filepath = filedialog.askopenfilename(
-            title="Select PST File",
+            title="Select PST or EML File",
             filetypes=[
+                ("Email Files", "*.pst *.eml"),
                 ("PST Files", "*.pst"),
+                ("EML Files", "*.eml"),
                 ("All Files", "*.*")
             ]
         )
@@ -349,11 +356,17 @@ class MainWindow:
         output_dir = self.output_entry.get().strip()
         
         if not pst_path:
-            messagebox.showerror("Error", "Please select a PST file.")
+            messagebox.showerror("Error", "Please select a PST or EML file.")
             return False
         
         if not os.path.isfile(pst_path):
-            messagebox.showerror("Error", f"PST file not found:\n{pst_path}")
+            messagebox.showerror("Error", f"File not found:\n{pst_path}")
+            return False
+        
+        # Validate file extension
+        ext = Path(pst_path).suffix.lower()
+        if ext not in ['.pst', '.eml']:
+            messagebox.showerror("Error", f"Unsupported file type: {ext}\nPlease select a .pst or .eml file.")
             return False
         
         if not output_dir:
@@ -375,10 +388,15 @@ class MainWindow:
             return
         
         # Get values from UI
-        pst_path = self.pst_entry.get().strip()
+        input_path = self.pst_entry.get().strip()
         output_dir = self.output_entry.get().strip()
         
-        # Create config
+        # Check if this is an EML file - handle separately
+        if Path(input_path).suffix.lower() == '.eml':
+            self._convert_eml_file(input_path, output_dir)
+            return
+        
+        # Create config for PST conversion
         certainty_map = {
             'LOW': DuplicateCertainty.LOW,
             'MEDIUM': DuplicateCertainty.MEDIUM,
@@ -387,7 +405,7 @@ class MainWindow:
         }
         
         config = PipelineConfig(
-            pst_path=pst_path,
+            pst_path=input_path,
             output_dir=output_dir,
             ocr_enabled=self.ocr_var.get(),
             detect_duplicates=self.dup_var.get(),
@@ -398,9 +416,11 @@ class MainWindow:
             keep_individual_pdfs=self.individual_var.get(),
             create_combined_pdf=self.combined_var.get(),
             add_toc=self.settings.get('add_toc', True),
-            add_separators=self.settings.get('add_separators', True),
+            add_separators=self.settings.get('add_separators', False),
+            add_att_separators=self.settings.get('add_att_separators', False),
             page_size=self.settings.get('page_size', 'Letter'),
             page_margin=self.settings.get('page_margin', 0.5),
+            load_remote_images=self.settings.get('load_remote_images', False),
             merge_folders=self.merge_folders_var.get(),
             rename_emls=self.settings.get('rename_emls', True),
             skip_deleted_items=self.settings.get('skip_deleted_items', True),
@@ -442,6 +462,109 @@ class MainWindow:
                 errors=[str(e)]
             )
     
+    def _convert_eml_file(self, eml_path: str, output_dir: str):
+        """
+        Convert a single EML file to PDF.
+        
+        This is a simplified conversion path for troubleshooting individual emails.
+        
+        Args:
+            eml_path: Path to the EML file
+            output_dir: Output directory for the PDF
+        """
+        try:
+            self._update_status("Converting EML file...")
+            self._set_ui_state(False)
+            
+            # Parse the EML file
+            parser = EMLParser()
+            email_data = parser.parse_file(eml_path)
+            
+            # Create output path
+            eml_name = Path(eml_path).stem
+            output_path = Path(output_dir)
+            output_path.mkdir(parents=True, exist_ok=True)
+            
+            # Convert email to PDF
+            converter = EmailToPDFConverter(
+                load_remote_images=self.settings.get('load_remote_images', False)
+            )
+            email_pdf_path = output_path / f"{eml_name}.pdf"
+            converter.convert_email_to_pdf(email_data, email_pdf_path, include_headers=True)
+            
+            # Convert attachments if any
+            attachment_pdfs = []
+            if email_data.attachments:
+                self._update_status(f"Converting {len(email_data.attachments)} attachment(s)...")
+                att_output_dir = output_path / "attachments"
+                att_converter = AttachmentConverter(att_output_dir)
+                
+                for att in email_data.attachments:
+                    try:
+                        result = att_converter.convert_bytes(
+                            content=att.content,
+                            content_type=att.content_type,
+                            filename=att.filename,
+                            output_dir=att_output_dir
+                        )
+                        if result.output_path:
+                            attachment_pdfs.append((att.filename, result.output_path))
+                    except Exception as e:
+                        logger.warning(f"Failed to convert attachment {att.filename}: {e}")
+            
+            # Merge email with attachments if we have any
+            if attachment_pdfs:
+                self._update_status("Merging email with attachments...")
+                merger = PDFMerger()
+                
+                # Create combined PDF using merge_email_with_attachments
+                combined_path = output_path / f"{eml_name}_with_attachments.pdf"
+                
+                # Extract just the paths for merging
+                att_pdf_paths = [att_pdf for _, att_pdf in attachment_pdfs]
+                
+                result = merger.merge_email_with_attachments(
+                    email_pdf=email_pdf_path,
+                    attachment_pdfs=att_pdf_paths,
+                    output_path=combined_path,
+                    add_separators=self.settings.get('add_att_separators', False)
+                )
+                
+                if result.success:
+                    final_pdf = combined_path
+                else:
+                    logger.warning(f"Merge failed: {result.errors}")
+                    final_pdf = email_pdf_path
+            else:
+                final_pdf = email_pdf_path
+            
+            self._set_ui_state(True)
+            self._update_status("Conversion complete!")
+            
+            # Show success message
+            messagebox.showinfo(
+                "Success",
+                f"EML converted successfully!\n\n"
+                f"Output: {final_pdf}\n"
+                f"Attachments: {len(attachment_pdfs)}"
+            )
+            
+            # Offer to open the PDF
+            if messagebox.askyesno("Open PDF", "Would you like to open the PDF?"):
+                import subprocess
+                if sys.platform == 'darwin':
+                    subprocess.run(['open', str(final_pdf)])
+                elif sys.platform == 'win32':
+                    os.startfile(str(final_pdf))
+                else:
+                    subprocess.run(['xdg-open', str(final_pdf)])
+                    
+        except Exception as e:
+            logger.exception("EML conversion failed")
+            self._set_ui_state(True)
+            self._update_status("Conversion failed!")
+            messagebox.showerror("Error", f"Failed to convert EML file:\n\n{str(e)}")
+
     def _on_progress(self, progress: PipelineProgress):
         """Handle progress updates from pipeline."""
         # Schedule UI update on main thread

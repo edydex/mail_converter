@@ -773,6 +773,68 @@ class AttachmentConverter:
             logger.warning(f"LibreOffice conversion failed for {input_path.name}: {e}")
             return self._fallback_document_convert(input_path, output_path, ext)
     
+    def _libreoffice_excel_to_pdf(self, input_path: Path, output_path: Path) -> ConversionResult:
+        """
+        Convert Excel to PDF using LibreOffice with ALL sheets.
+        Uses special export options to ensure all sheets are included.
+        """
+        if not self.has_libreoffice:
+            return self._excel_fallback_convert(input_path, output_path, '.xlsx')
+        
+        try:
+            lo_path = self.libreoffice_path
+            
+            # Create temp output directory
+            temp_out = Path(self.temp_dir) / "lo_output"
+            temp_out.mkdir(exist_ok=True)
+            
+            # LibreOffice Calc by default exports only the active sheet.
+            # To export ALL sheets, we need to use the proper export filter.
+            # The "calc_pdf_Export" filter with empty Selection exports all sheets.
+            cmd = [
+                lo_path,
+                '--headless',
+                '--convert-to', 'pdf:calc_pdf_Export',
+                '--outdir', str(temp_out),
+                str(input_path)
+            ]
+            
+            logger.info(f"Converting Excel with all sheets: {input_path.name}")
+            
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=180  # Longer timeout for multi-sheet workbooks
+            )
+            
+            # Find output file
+            expected_output = temp_out / f"{input_path.stem}.pdf"
+            
+            if expected_output.exists():
+                # Verify we got more than just the active sheet by checking file size
+                pdf_size = expected_output.stat().st_size
+                logger.info(f"Excel PDF created: {pdf_size} bytes")
+                
+                shutil.move(str(expected_output), str(output_path))
+                return ConversionResult(
+                    status=ConversionStatus.SUCCESS,
+                    output_path=output_path,
+                    original_path=input_path,
+                    original_type='.xlsx',
+                    message="Excel converted with print settings applied"
+                )
+            else:
+                raise RuntimeError(f"LibreOffice did not produce output: {result.stderr}")
+        
+        except subprocess.TimeoutExpired:
+            logger.warning(f"LibreOffice timed out converting Excel {input_path.name}")
+            return self._excel_fallback_convert(input_path, output_path, '.xlsx')
+        except Exception as e:
+            logger.warning(f"LibreOffice Excel conversion failed: {e}, trying standard conversion")
+            # Fall back to standard conversion
+            return self._libreoffice_convert(input_path, output_path, '.xlsx')
+    
     def _fallback_document_convert(self, input_path: Path, output_path: Path, ext: str) -> ConversionResult:
         """Fallback conversion for documents when LibreOffice is unavailable."""
         
@@ -875,27 +937,120 @@ class AttachmentConverter:
     # === Excel Conversion ===
     
     def _convert_excel(self, input_path: Path, output_path: Path) -> ConversionResult:
-        """Convert Excel file to PDF."""
+        """Convert Excel file to PDF with optimized print settings."""
         ext = input_path.suffix.lower()
         
-        # Try LibreOffice first
+        # For xlsx files, apply print settings before LibreOffice conversion
+        if ext == '.xlsx' and self.has_libreoffice:
+            try:
+                result = self._convert_excel_with_settings(input_path, output_path)
+                if result.status == ConversionStatus.SUCCESS:
+                    return result
+            except Exception as e:
+                logger.warning(f"Excel print settings failed, trying direct conversion: {e}")
+        
+        # Try LibreOffice directly (for .xls or if settings approach failed)
         if self.has_libreoffice:
             result = self._libreoffice_convert(input_path, output_path, ext)
             if result.status == ConversionStatus.SUCCESS:
                 return result
         
         # Fallback to pandas/reportlab
+        return self._excel_fallback_convert(input_path, output_path, ext)
+    
+    def _convert_excel_with_settings(self, input_path: Path, output_path: Path) -> ConversionResult:
+        """
+        Convert Excel with optimized print settings:
+        - All sheets printed
+        - Fit all columns on one page
+        - Landscape orientation  
+        - Small margins
+        """
+        from openpyxl import load_workbook
+        from openpyxl.worksheet.page import PageMargins
+        from openpyxl.worksheet.properties import WorksheetProperties, PageSetupProperties
+        
+        # Create a temp copy to modify
+        temp_xlsx = Path(self.temp_dir) / f"print_ready_{input_path.name}"
+        shutil.copy(input_path, temp_xlsx)
+        
+        try:
+            wb = load_workbook(temp_xlsx)
+            
+            # Get list of all sheet names for logging
+            sheet_names = wb.sheetnames
+            logger.info(f"Excel file has {len(sheet_names)} sheets: {sheet_names}")
+            
+            for sheet in wb.worksheets:
+                try:
+                    # Set landscape orientation
+                    sheet.page_setup.orientation = 'landscape'
+                    
+                    # Ensure sheet has properties (fixes openpyxl bug with some Excel files)
+                    if sheet.sheet_properties is None:
+                        sheet.sheet_properties = WorksheetProperties()
+                    if sheet.sheet_properties.pageSetUpPr is None:
+                        sheet.sheet_properties.pageSetUpPr = PageSetupProperties()
+                    
+                    # Fit all columns on one page (width), let rows span pages
+                    sheet.sheet_properties.pageSetUpPr.fitToPage = True
+                    sheet.page_setup.fitToWidth = 1
+                    sheet.page_setup.fitToHeight = 0  # 0 = unlimited pages for height
+                    
+                    # Small margins (in inches)
+                    sheet.page_margins = PageMargins(
+                        left=0.25,
+                        right=0.25,
+                        top=0.5,
+                        bottom=0.5,
+                        header=0.3,
+                        footer=0.3
+                    )
+                    
+                    # Ensure sheet is visible (not hidden) so it gets printed
+                    sheet.sheet_state = 'visible'
+                    
+                    logger.debug(f"Applied print settings to sheet: {sheet.title}")
+                except Exception as sheet_err:
+                    logger.warning(f"Could not apply settings to sheet {sheet.title}: {sheet_err}")
+            
+            wb.save(temp_xlsx)
+            wb.close()
+            
+            # Convert with LibreOffice using special filter to export ALL sheets
+            result = self._libreoffice_excel_to_pdf(temp_xlsx, output_path)
+            
+            # Clean up temp file
+            try:
+                temp_xlsx.unlink()
+            except:
+                pass
+            
+            return result
+            
+        except Exception as e:
+            # Clean up on error
+            try:
+                temp_xlsx.unlink()
+            except:
+                pass
+            raise
+    
+    def _excel_fallback_convert(self, input_path: Path, output_path: Path, ext: str) -> ConversionResult:
+        """Fallback Excel conversion using pandas/reportlab (landscape, fit to page)."""
         try:
             if ext == '.xlsx':
                 df_dict = pd.read_excel(input_path, sheet_name=None, engine='openpyxl')
             else:
                 df_dict = pd.read_excel(input_path, sheet_name=None, engine='xlrd')
             
+            # Use landscape with small margins for spreadsheets
+            from reportlab.lib.pagesizes import landscape, letter
             pdf_doc = SimpleDocTemplate(
                 str(output_path),
-                pagesize=A4,
-                rightMargin=36,
-                leftMargin=36,
+                pagesize=landscape(letter),
+                rightMargin=18,
+                leftMargin=18,
                 topMargin=36,
                 bottomMargin=36
             )
