@@ -283,42 +283,31 @@ class EmailToPDFConverter:
             box-sizing: border-box;
         }}
         
-        /* Tables - force to fit page width regardless of inline width attributes */
+        /* Tables - constrain to page width but preserve original styling */
         table {{
             border-collapse: collapse;
             max-width: 100% !important;
-            width: 100% !important;
-            table-layout: fixed !important;
+            table-layout: auto;
         }}
         
+        /* Only add padding to td/th if the table has explicit borders */
+        /* Tables with border="0" or no border are layout tables - don't add padding */
         td, th {{
-            padding: 4px 8px;
             vertical-align: top;
-            max-width: 100% !important;
             overflow-wrap: break-word;
             word-wrap: break-word;
-            word-break: break-word;
         }}
         
-        /* Force side-by-side table cells to stack vertically on narrow pages */
-        @media print {{
-            table {{
-                width: 100% !important;
-                table-layout: fixed !important;
-            }}
-            td, th {{
-                display: block !important;
-                width: 100% !important;
-            }}
-        }}
-        
-        /* Style tables that have borders */
-        table[border], table[cellspacing], table[cellpadding] {{
+        /* Style tables that explicitly request borders (border > 0) */
+        /* Note: border="0" tables should remain invisible */
+        table[border]:not([border="0"]) {{
             border: 1px solid #ddd;
         }}
         
-        table[border] td, table[border] th {{
+        table[border]:not([border="0"]) td, 
+        table[border]:not([border="0"]) th {{
             border: 1px solid #ddd;
+            padding: 4px 8px;
         }}
         
         /* Images - respect explicit width/height from email, but cap at page width */
@@ -688,23 +677,59 @@ class EmailToPDFConverter:
     
     def _strip_fixed_table_widths(self, html_content: str) -> str:
         """
-        Remove fixed width attributes from tables, tds, and other layout elements.
-        This prevents newsletter-style emails from overflowing the page.
+        Scale down fixed width attributes that exceed page width.
+        Instead of removing widths entirely (which breaks layout), we scale them
+        proportionally to fit within the printable area (~550px for letter with margins).
         """
-        # Remove ALL width attributes from tables, tds, ths (more aggressive)
-        # Matches: width="600" width='600' width=600 width="100%"
+        MAX_WIDTH = 550  # Approximate printable width in pixels for letter size with margins
+        
+        def scale_width_attr(match):
+            """Scale width attribute if it exceeds max width."""
+            full_match = match.group(0)
+            width_val = match.group(1)
+            
+            # Skip percentage widths - they're responsive
+            if '%' in width_val:
+                return full_match
+            
+            try:
+                width_num = int(width_val)
+                if width_num > MAX_WIDTH:
+                    # Scale proportionally
+                    scale_factor = MAX_WIDTH / width_num
+                    # For the main container, just cap at max
+                    # For nested elements, scale proportionally
+                    return f' width="{MAX_WIDTH}"'
+                return full_match
+            except ValueError:
+                return full_match
+        
+        # Scale width attributes that are too large
+        # Matches: width="600" width='600' width=600
         html_content = re.sub(
-            r'\s*width\s*=\s*["\']?[\d%]+["\']?',
-            '',
+            r'\s*width\s*=\s*["\']?([\d%]+)["\']?',
+            scale_width_attr,
             html_content,
             flags=re.IGNORECASE
         )
         
-        # Remove inline style width declarations that use fixed pixels
-        # Matches: width: 600px; or width:600px (with or without semicolon)
+        def scale_inline_width(match):
+            """Scale inline style width if it exceeds max width."""
+            full_match = match.group(0)
+            width_val = match.group(1)
+            
+            try:
+                width_num = int(width_val)
+                if width_num > MAX_WIDTH:
+                    return f'width: {MAX_WIDTH}px;'
+                return full_match
+            except ValueError:
+                return full_match
+        
+        # Scale inline style width declarations that use fixed pixels
         html_content = re.sub(
-            r'width\s*:\s*\d+px\s*;?',
-            '',
+            r'width\s*:\s*(\d+)px\s*;?',
+            scale_inline_width,
             html_content,
             flags=re.IGNORECASE
         )

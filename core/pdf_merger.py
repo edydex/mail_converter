@@ -675,7 +675,8 @@ class PDFMerger:
         
         if toc_data:
             # Create table with dot leaders
-            col_widths = [page_width - 0.5*inch, 0.5*inch]
+            # Use 0.75 inch for page numbers to handle 5+ digit page numbers
+            col_widths = [page_width - 0.75*inch, 0.75*inch]
             
             # Build table rows with styling - plain text, no links
             table_data = []
