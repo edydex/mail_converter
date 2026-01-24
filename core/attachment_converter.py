@@ -85,6 +85,8 @@ class AttachmentConverter:
         '.csv': '_convert_csv',
         '.html': '_convert_html',
         '.htm': '_convert_html',
+        # Calendar
+        '.ics': '_convert_ics',
         # Images
         '.jpg': '_convert_image',
         '.jpeg': '_convert_image',
@@ -186,6 +188,49 @@ class AttachmentConverter:
         logger.info(message)
         if self.progress_callback:
             self.progress_callback(message)
+    
+    def _safe_subprocess_run(
+        self, 
+        cmd: List[str], 
+        timeout: int = 120,
+        **kwargs
+    ) -> subprocess.CompletedProcess:
+        """
+        Run a subprocess with settings optimized for macOS thread safety.
+        
+        On macOS, running subprocess from background threads can cause 
+        Objective-C runtime crashes (NSInvalidArgumentException). This method
+        isolates the subprocess to prevent those issues.
+        
+        Args:
+            cmd: Command and arguments to run
+            timeout: Maximum time to wait (seconds)
+            **kwargs: Additional args passed to subprocess.run
+            
+        Returns:
+            CompletedProcess result
+        """
+        # Create a clean environment to avoid macOS threading issues
+        clean_env = os.environ.copy()
+        
+        # Remove macOS-specific variables that can cause issues
+        for var in ['__CF_USER_TEXT_ENCODING', 'SECURITYSESSIONID']:
+            clean_env.pop(var, None)
+        
+        # Disable Objective-C fork safety check that can cause crashes
+        if platform.system() == 'Darwin':
+            clean_env['OBJC_DISABLE_INITIALIZE_FORK_SAFETY'] = 'YES'
+        
+        return subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            stdin=subprocess.DEVNULL,    # Don't inherit stdin
+            start_new_session=True,      # Isolate from parent process group
+            env=clean_env,
+            **kwargs
+        )
     
     def _create_embedded_attachment_pdf(
         self, 
@@ -735,7 +780,7 @@ class AttachmentConverter:
             temp_out = Path(self.temp_dir) / "lo_output"
             temp_out.mkdir(exist_ok=True)
             
-            # Run LibreOffice conversion
+            # Run LibreOffice conversion using thread-safe subprocess helper
             cmd = [
                 lo_path,
                 '--headless',
@@ -744,12 +789,7 @@ class AttachmentConverter:
                 str(input_path)
             ]
             
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=120
-            )
+            result = self._safe_subprocess_run(cmd, timeout=120)
             
             # Find output file
             expected_output = temp_out / f"{input_path.stem}.pdf"
@@ -801,12 +841,8 @@ class AttachmentConverter:
             
             logger.info(f"Converting Excel with all sheets: {input_path.name}")
             
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=180  # Longer timeout for multi-sheet workbooks
-            )
+            # Use thread-safe subprocess helper (longer timeout for multi-sheet workbooks)
+            result = self._safe_subprocess_run(cmd, timeout=180)
             
             # Find output file
             expected_output = temp_out / f"{input_path.stem}.pdf"
@@ -1170,8 +1206,339 @@ class AttachmentConverter:
         with open(path, 'r', encoding='utf-8', errors='replace') as f:
             return f.read()
     
-    # === CSV Conversion ===
+    # === ICS Calendar Conversion ===
     
+    def _convert_ics(self, input_path: Path, output_path: Path) -> ConversionResult:
+        """
+        Convert ICS (iCalendar) file to a nicely formatted PDF.
+        Extracts event details like title, date/time, location, attendees, etc.
+        """
+        try:
+            content = self._read_text_file(input_path)
+            events = self._parse_ics_content(content)
+            
+            if not events:
+                # No events found, create a simple text conversion
+                return self._convert_text(input_path, output_path)
+            
+            # Create PDF with event details
+            pdf_doc = SimpleDocTemplate(
+                str(output_path),
+                pagesize=letter,
+                rightMargin=72,
+                leftMargin=72,
+                topMargin=72,
+                bottomMargin=72
+            )
+            
+            styles = getSampleStyleSheet()
+            
+            # Custom styles for calendar invite
+            title_style = ParagraphStyle(
+                'EventTitle',
+                parent=styles['Heading1'],
+                fontSize=16,
+                spaceAfter=12,
+                textColor=colors.HexColor('#1a365d')
+            )
+            
+            label_style = ParagraphStyle(
+                'Label',
+                parent=styles['Normal'],
+                fontSize=10,
+                fontName='Helvetica-Bold',
+                textColor=colors.HexColor('#4a5568'),
+                spaceBefore=8,
+                spaceAfter=2
+            )
+            
+            value_style = ParagraphStyle(
+                'Value',
+                parent=styles['Normal'],
+                fontSize=11,
+                leftIndent=10,
+                spaceAfter=6
+            )
+            
+            attendee_style = ParagraphStyle(
+                'Attendee',
+                parent=styles['Normal'],
+                fontSize=10,
+                leftIndent=20,
+                spaceAfter=2
+            )
+            
+            desc_style = ParagraphStyle(
+                'Description',
+                parent=styles['Normal'],
+                fontSize=10,
+                leftIndent=10,
+                spaceAfter=6
+            )
+            
+            story = []
+            
+            # Header
+            story.append(Paragraph("📅 Calendar Invitation", styles['Title']))
+            story.append(Spacer(1, 20))
+            
+            for i, event in enumerate(events):
+                if i > 0:
+                    story.append(Spacer(1, 20))
+                    story.append(Paragraph("─" * 60, styles['Normal']))
+                    story.append(Spacer(1, 20))
+                
+                # Event title/summary
+                summary = self._escape_text(event.get('summary', 'Untitled Event'))
+                story.append(Paragraph(summary, title_style))
+                
+                # Date and Time (the key info the user wanted!)
+                if event.get('start') or event.get('end'):
+                    story.append(Paragraph("Date & Time", label_style))
+                    
+                    start = event.get('start', '')
+                    end = event.get('end', '')
+                    
+                    if start and end:
+                        time_str = f"{start}  →  {end}"
+                    elif start:
+                        time_str = f"Starts: {start}"
+                    else:
+                        time_str = f"Ends: {end}"
+                    
+                    story.append(Paragraph(self._escape_text(time_str), value_style))
+                
+                # Duration if available
+                if event.get('duration'):
+                    story.append(Paragraph(f"Duration: {event['duration']}", value_style))
+                
+                # Location
+                if event.get('location'):
+                    story.append(Paragraph("Location", label_style))
+                    story.append(Paragraph(self._escape_text(event['location']), value_style))
+                
+                # Organizer
+                if event.get('organizer'):
+                    story.append(Paragraph("Organizer", label_style))
+                    story.append(Paragraph(self._escape_text(event['organizer']), value_style))
+                
+                # Attendees
+                if event.get('attendees'):
+                    story.append(Paragraph(f"Attendees ({len(event['attendees'])})", label_style))
+                    for attendee in event['attendees'][:20]:  # Limit to 20
+                        story.append(Paragraph(f"• {self._escape_text(attendee)}", attendee_style))
+                    if len(event['attendees']) > 20:
+                        story.append(Paragraph(f"  ... and {len(event['attendees']) - 20} more", attendee_style))
+                
+                # Status
+                if event.get('status'):
+                    story.append(Paragraph("Status", label_style))
+                    story.append(Paragraph(self._escape_text(event['status']), value_style))
+                
+                # Description
+                if event.get('description'):
+                    story.append(Paragraph("Description", label_style))
+                    desc_text = event['description'][:2000]  # Limit length
+                    if len(event['description']) > 2000:
+                        desc_text += "..."
+                    # Handle line breaks in description
+                    desc_text = desc_text.replace('\n', '<br/>')
+                    story.append(Paragraph(self._escape_text(desc_text).replace('&lt;br/&gt;', '<br/>'), desc_style))
+                
+                # URL
+                if event.get('url'):
+                    story.append(Paragraph("URL", label_style))
+                    story.append(Paragraph(self._escape_text(event['url']), value_style))
+            
+            pdf_doc.build(story)
+            
+            return ConversionResult(
+                status=ConversionStatus.SUCCESS,
+                output_path=output_path,
+                original_path=input_path,
+                original_type='.ics',
+                message=f"Calendar invite converted ({len(events)} event(s))"
+            )
+            
+        except Exception as e:
+            logger.exception(f"ICS conversion failed: {e}")
+            raise RuntimeError(f"ICS conversion failed: {e}")
+    
+    def _parse_ics_content(self, content: str) -> list:
+        """
+        Parse ICS content and extract event details.
+        Simple parser that handles common ICS properties without external dependencies.
+        """
+        events = []
+        current_event = None
+        current_key = None
+        current_value = ""
+        
+        lines = content.replace('\r\n', '\n').replace('\r', '\n').split('\n')
+        
+        # Handle line continuations (lines starting with space/tab are continuations)
+        unfolded_lines = []
+        for line in lines:
+            if line.startswith(' ') or line.startswith('\t'):
+                if unfolded_lines:
+                    unfolded_lines[-1] += line[1:]
+            else:
+                unfolded_lines.append(line)
+        
+        for line in unfolded_lines:
+            line = line.strip()
+            if not line:
+                continue
+            
+            if line == 'BEGIN:VEVENT':
+                current_event = {}
+            elif line == 'END:VEVENT':
+                if current_event:
+                    events.append(current_event)
+                current_event = None
+            elif current_event is not None and ':' in line:
+                # Parse property
+                # Handle properties with parameters like DTSTART;TZID=America/New_York:20240115T090000
+                if ';' in line.split(':')[0]:
+                    key_part = line.split(':')[0]
+                    key = key_part.split(';')[0]
+                    value = ':'.join(line.split(':')[1:])
+                else:
+                    key, value = line.split(':', 1)
+                
+                key = key.upper()
+                
+                if key == 'SUMMARY':
+                    current_event['summary'] = self._decode_ics_value(value)
+                elif key == 'DTSTART':
+                    current_event['start'] = self._format_ics_datetime(value)
+                elif key == 'DTEND':
+                    current_event['end'] = self._format_ics_datetime(value)
+                elif key == 'DURATION':
+                    current_event['duration'] = self._format_ics_duration(value)
+                elif key == 'LOCATION':
+                    current_event['location'] = self._decode_ics_value(value)
+                elif key == 'DESCRIPTION':
+                    current_event['description'] = self._decode_ics_value(value)
+                elif key == 'ORGANIZER':
+                    # Extract name from CN parameter or email from mailto
+                    organizer = value
+                    organizer_name = None
+                    organizer_email = None
+                    
+                    # Check for CN (Common Name) in the parameters part before the colon
+                    # The full line might be: ORGANIZER;CN=John Smith:mailto:john@example.com
+                    # But we only have the value part after the first colon split
+                    # So check the key_part if it exists
+                    if ';' in line.split(':')[0]:
+                        key_part = line.split(':')[0]
+                        # Look for CN= in the parameters
+                        import re
+                        cn_match = re.search(r'CN=([^;:]+)', key_part, re.IGNORECASE)
+                        if cn_match:
+                            organizer_name = cn_match.group(1).strip('"\'')
+                    
+                    # Extract email from mailto:
+                    if 'mailto:' in organizer.lower():
+                        organizer_email = re.split(r'mailto:', organizer, flags=re.IGNORECASE)[-1]
+                    else:
+                        organizer_email = organizer
+                    
+                    # Use name if available, otherwise email
+                    if organizer_name:
+                        current_event['organizer'] = organizer_name
+                    else:
+                        current_event['organizer'] = organizer_email
+                elif key == 'ATTENDEE':
+                    if 'attendees' not in current_event:
+                        current_event['attendees'] = []
+                    # Extract email/name from attendee line
+                    attendee = value
+                    # Handle both MAILTO: and mailto: (case insensitive)
+                    if 'mailto:' in attendee.lower():
+                        import re
+                        attendee = re.split(r'mailto:', attendee, flags=re.IGNORECASE)[-1]
+                        attendee = attendee.split('mailto:')[-1]
+                    current_event['attendees'].append(attendee)
+                elif key == 'STATUS':
+                    current_event['status'] = value
+                elif key == 'URL':
+                    current_event['url'] = value
+        
+        return events
+    
+    def _decode_ics_value(self, value: str) -> str:
+        """Decode ICS escaped characters."""
+        value = value.replace('\\n', '\n')
+        value = value.replace('\\N', '\n')
+        value = value.replace('\\,', ',')
+        value = value.replace('\\;', ';')
+        value = value.replace('\\\\', '\\')
+        return value
+    
+    def _format_ics_datetime(self, value: str) -> str:
+        """Format ICS datetime into human-readable format."""
+        try:
+            # Remove any trailing Z (UTC indicator) for parsing
+            clean_value = value.rstrip('Z')
+            
+            # Try different formats
+            formats = [
+                ('%Y%m%dT%H%M%S', '%B %d, %Y at %I:%M %p'),  # 20240115T090000
+                ('%Y%m%d', '%B %d, %Y'),  # 20240115 (all-day event)
+            ]
+            
+            for in_fmt, out_fmt in formats:
+                try:
+                    from datetime import datetime
+                    dt = datetime.strptime(clean_value, in_fmt)
+                    result = dt.strftime(out_fmt)
+                    if value.endswith('Z'):
+                        result += ' (UTC)'
+                    return result
+                except ValueError:
+                    continue
+            
+            # If no format matched, return as-is
+            return value
+        except Exception:
+            return value
+    
+    def _format_ics_duration(self, value: str) -> str:
+        """Format ICS duration into human-readable format."""
+        # ICS duration format: P[n]W or P[n]DT[n]H[n]M[n]S
+        try:
+            result = []
+            value = value.upper()
+            
+            if value.startswith('P'):
+                value = value[1:]
+            
+            if 'W' in value:
+                weeks = int(value.split('W')[0])
+                result.append(f"{weeks} week{'s' if weeks != 1 else ''}")
+            elif 'T' in value:
+                date_part, time_part = value.split('T')
+                
+                if 'D' in date_part:
+                    days = int(date_part.split('D')[0])
+                    result.append(f"{days} day{'s' if days != 1 else ''}")
+                
+                if 'H' in time_part:
+                    hours = int(time_part.split('H')[0])
+                    result.append(f"{hours} hour{'s' if hours != 1 else ''}")
+                    time_part = time_part.split('H')[1]
+                
+                if 'M' in time_part:
+                    minutes = int(time_part.split('M')[0])
+                    result.append(f"{minutes} minute{'s' if minutes != 1 else ''}")
+            
+            return ', '.join(result) if result else value
+        except Exception:
+            return value
+
+    # === CSV Conversion ===
+
     def _convert_csv(self, input_path: Path, output_path: Path) -> ConversionResult:
         """Convert CSV file to PDF."""
         try:

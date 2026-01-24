@@ -137,58 +137,83 @@ class PDFMerger:
         try:
             # TOC layout parameters (must match _create_table_of_contents)
             page_width = float(letter[0])
+            page_height = float(letter[1])
             left_margin = 0.75 * inch
             top_margin = inch
+            bottom_margin = inch
             title_height = 18 + 30  # fontSize + spaceAfter
             spacer_height = 20
-            row_height = 18 + 8  # leading + padding
+            row_height = 18 + 8  # leading + padding (leading=18, toppad+bottompad=8)
             
-            # Starting Y position (from top of page)
-            start_y = float(letter[1]) - top_margin - title_height - spacer_height
+            # Calculate entries per page - DIFFERENT for first page vs subsequent pages
+            usable_first_page = page_height - top_margin - bottom_margin - title_height - spacer_height
+            usable_other_pages = page_height - top_margin - bottom_margin
             
-            # Entries per page (approximate)
-            usable_height = float(letter[1]) - top_margin - inch  # bottom margin
-            entries_per_page = int((usable_height - title_height - spacer_height) / row_height)
+            # Subtract 1 from first page count - reportlab's table uses slightly more space
+            entries_first_page = int(usable_first_page / row_height) - 1
+            entries_other_pages = int(usable_other_pages / row_height)
+            
+            logger.debug(f"TOC entries per page: first={entries_first_page}, others={entries_other_pages}")
+            
+            # DEBUG: Log first few entries on each page
+            debug_entries = min(5, len(toc_entries))
+            for i in range(debug_entries):
+                title, page = toc_entries[i]
+                logger.debug(f"  Entry {i}: '{title[:30]}...' -> page {page}")
             
             # Add link annotations for each entry
             for idx, (title, target_page) in enumerate(toc_entries):
                 # Which TOC page is this entry on?
-                toc_page_idx = idx // entries_per_page
+                if idx < entries_first_page:
+                    toc_page_idx = 0
+                    entry_on_page = idx
+                else:
+                    # After first page
+                    remaining = idx - entries_first_page
+                    toc_page_idx = 1 + (remaining // entries_other_pages)
+                    entry_on_page = remaining % entries_other_pages
+                
                 if toc_page_idx >= toc_page_count:
                     toc_page_idx = toc_page_count - 1
+                    # Recalculate position on last page
+                    entries_before_last = entries_first_page + (toc_page_count - 2) * entries_other_pages
+                    entry_on_page = idx - entries_before_last
                 
-                # Y position on this TOC page
-                entry_on_page = idx % entries_per_page
-                entry_y = start_y - (entry_on_page * row_height)
+                # Y position on this TOC page (from bottom of page, PDF coordinates)
+                if toc_page_idx == 0:
+                    # First page has title + spacer before table starts
+                    start_y = page_height - top_margin - title_height - spacer_height
+                else:
+                    # Subsequent pages: table continues from top margin
+                    start_y = page_height - top_margin
                 
-                # If this is not the first TOC page, adjust for no title
-                if toc_page_idx > 0:
-                    entry_y = float(letter[1]) - top_margin - (entry_on_page * row_height)
+                entry_y_top = start_y - (entry_on_page * row_height)
+                entry_y_bottom = entry_y_top - row_height
                 
                 # Link rectangle (covers the entry row)
                 link_rect = pikepdf.Array([
                     left_margin,           # x1
-                    entry_y - row_height,  # y1
+                    entry_y_bottom,        # y1 (bottom of row)
                     page_width - left_margin,  # x2
-                    entry_y                # y2
+                    entry_y_top            # y2 (top of row)
                 ])
                 
                 # Create destination (page reference + fit)
                 # target_page is 1-based, pikepdf pages are 0-based
                 dest_page_idx = target_page - 1
                 if dest_page_idx < len(pdf.pages):
-                    dest_page = pdf.pages[dest_page_idx]
+                    # Get the page object reference - need .obj to get underlying object
+                    # from pikepdf's ObjectHelper wrapper
+                    page_ref = pdf.pages[dest_page_idx].obj
                     
-                    # GoTo action with XYZ destination (go to top of page)
+                    # Create a direct destination array (not wrapped in action)
+                    # Using /Fit to fit the entire page in the window
                     dest = pikepdf.Array([
-                        dest_page.obj,
-                        pikepdf.Name('/XYZ'),
-                        0,    # left
-                        float(letter[1]),  # top
-                        0     # zoom (0 = inherit)
+                        page_ref,
+                        pikepdf.Name('/Fit')
                     ])
                     
-                    # Create link annotation
+                    # Create link annotation with direct destination
                     link_annot = pikepdf.Dictionary({
                         '/Type': pikepdf.Name('/Annot'),
                         '/Subtype': pikepdf.Name('/Link'),
@@ -464,8 +489,15 @@ class PDFMerger:
             dummy_reader = PdfReader(io.BytesIO(dummy_toc))
             toc_pages = len(dummy_reader.pages)
             
+            # Debug: log some entries
+            logger.info(f"TOC will have {toc_pages} pages")
+            logger.info(f"First 3 original toc_entries: {toc_entries[:3]}")
+            
             # Adjust all TOC entries to account for TOC pages being inserted at front
             adjusted_toc_entries = [(title, page_num + toc_pages) for title, page_num in toc_entries]
+            
+            logger.info(f"First 3 adjusted toc_entries: {adjusted_toc_entries[:3]}")
+            logger.info(f"merged_pdf has {len(merged_pdf.pages)} pages before adding TOC")
             
             # Now create the real TOC with correct page numbers
             toc_pdf_bytes = self._create_table_of_contents(adjusted_toc_entries)
@@ -475,6 +507,8 @@ class PDFMerger:
             final_pdf = pikepdf.Pdf.new()
             final_pdf.pages.extend(toc_pdf.pages)
             final_pdf.pages.extend(merged_pdf.pages)
+            
+            logger.info(f"final_pdf has {len(final_pdf.pages)} pages (TOC: {toc_pages}, content: {len(merged_pdf.pages)})")
             
             # Copy embedded files from merged_pdf to final_pdf
             self._copy_embedded_files(merged_pdf, final_pdf)
@@ -492,10 +526,11 @@ class PDFMerger:
             if toc_entries:
                 self._add_bookmarks(merged_pdf, toc_entries)
         
-        # Write output with linearization for better compatibility
+        # Write output
         try:
-            # Linearize makes PDF "web-optimized" and more compatible with various readers
-            merged_pdf.save(str(output_path), linearize=True)
+            # Don't linearize large PDFs as it can cause link/bookmark issues
+            # Linearization reorders internal objects which can break page references
+            merged_pdf.save(str(output_path))
         except Exception as e:
             errors.append(f"Error writing output: {e}")
             return MergeResult(
