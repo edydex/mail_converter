@@ -297,6 +297,7 @@ class EmailToPDFConverter:
             vertical-align: top;
             overflow-wrap: break-word;
             word-wrap: break-word;
+            word-break: break-word;
             overflow: hidden;
         }}
         
@@ -679,14 +680,14 @@ class EmailToPDFConverter:
     
     def _strip_fixed_table_widths(self, html_content: str) -> str:
         """
-        Scale down fixed width attributes that exceed page width.
-        Instead of removing widths entirely (which breaks layout), we scale them
-        proportionally to fit within the printable area (~500px for letter with margins).
+        Remove or convert fixed width attributes that exceed page width.
+        For large widths (>400px), convert to 100% to let CSS handle the constraint.
+        This prevents text from overflowing the page boundaries.
         """
-        MAX_WIDTH = 500  # Approximate printable width in pixels for letter size with margins
+        MAX_WIDTH = 400  # Threshold above which we convert to 100%
         
-        def scale_width_attr(match):
-            """Scale width attribute if it exceeds max width."""
+        def convert_width_attr(match):
+            """Convert large width attribute to 100%."""
             full_match = match.group(0)
             width_val = match.group(1)
             
@@ -697,41 +698,38 @@ class EmailToPDFConverter:
             try:
                 width_num = int(width_val)
                 if width_num > MAX_WIDTH:
-                    # Scale proportionally
-                    scale_factor = MAX_WIDTH / width_num
-                    # For the main container, just cap at max
-                    # For nested elements, scale proportionally
-                    return f' width="{MAX_WIDTH}"'
+                    # Convert to 100% to let CSS max-width control it
+                    return ' width="100%"'
                 return full_match
             except ValueError:
                 return full_match
         
-        # Scale width attributes that are too large
+        # Convert large width attributes to percentages
         # Matches: width="600" width='600' width=600
         html_content = re.sub(
             r'\s*width\s*=\s*["\']?([\d%]+)["\']?',
-            scale_width_attr,
+            convert_width_attr,
             html_content,
             flags=re.IGNORECASE
         )
         
-        def scale_inline_width(match):
-            """Scale inline style width if it exceeds max width."""
+        def convert_inline_width(match):
+            """Convert large inline style width to 100%."""
             full_match = match.group(0)
             width_val = match.group(1)
             
             try:
                 width_num = int(width_val)
                 if width_num > MAX_WIDTH:
-                    return f'width: {MAX_WIDTH}px;'
+                    return 'width: 100%;'
                 return full_match
             except ValueError:
                 return full_match
         
-        # Scale inline style width declarations that use fixed pixels
+        # Convert inline style width declarations that use large fixed pixels
         html_content = re.sub(
             r'width\s*:\s*(\d+)px\s*;?',
-            scale_inline_width,
+            convert_inline_width,
             html_content,
             flags=re.IGNORECASE
         )
