@@ -288,6 +288,7 @@ class EmailToPDFConverter:
         table {{
             border-collapse: collapse;
             max-width: 100% !important;
+            width: auto !important;
             table-layout: auto;
             overflow: hidden;
         }}
@@ -300,6 +301,7 @@ class EmailToPDFConverter:
             word-wrap: break-word;
             word-break: break-word;
             overflow: hidden;
+            width: auto !important;
         }}
         
         /* Style tables that explicitly request borders (border > 0) */
@@ -687,19 +689,23 @@ class EmailToPDFConverter:
         try:
             soup = BeautifulSoup(html_content, 'html.parser')
             
+            removed_count = 0
             # Remove width attribute from tables, td, th, tr, tbody elements
             for tag in soup.find_all(['table', 'td', 'th', 'tr', 'tbody', 'thead', 'tfoot']):
                 # Remove width attribute entirely
                 if tag.has_attr('width'):
                     del tag['width']
+                    removed_count += 1
                 
                 # Also strip width from inline styles
                 if tag.has_attr('style'):
                     style = tag['style']
                     # Remove width declarations from style
-                    style = re.sub(r'width\s*:\s*\d+(?:px)?\s*;?', '', style, flags=re.IGNORECASE)
-                    if style.strip():
-                        tag['style'] = style.strip()
+                    new_style = re.sub(r'width\s*:\s*\d+(?:px)?\s*;?', '', style, flags=re.IGNORECASE)
+                    if new_style != style:
+                        removed_count += 1
+                    if new_style.strip():
+                        tag['style'] = new_style.strip()
                     else:
                         del tag['style']
             
@@ -711,11 +717,13 @@ class EmailToPDFConverter:
                     width_match = re.search(r'width\s*:\s*(\d+)px', style, re.IGNORECASE)
                     if width_match and int(width_match.group(1)) > 400:
                         style = re.sub(r'width\s*:\s*\d+px\s*;?', '', style, flags=re.IGNORECASE)
+                        removed_count += 1
                         if style.strip():
                             div['style'] = style.strip()
                         else:
                             del div['style']
             
+            logger.info(f"Stripped {removed_count} fixed width attributes from HTML")
             return str(soup)
         except Exception as e:
             logger.warning(f"Failed to strip table widths with BeautifulSoup: {e}")
