@@ -412,19 +412,25 @@ class EMLParser:
                 return None
             
             filename = part.get_filename()
+            content_type = part.get_content_type()
+            
             if filename:
                 # Decode filename if needed
                 if isinstance(filename, bytes):
                     filename = filename.decode('utf-8', errors='replace')
+                
+                # Ensure filename has an extension - if missing, add from content type
+                if not Path(filename).suffix:
+                    ext = self._get_extension_from_content_type(content_type)
+                    filename = f"{filename}{ext}"
             else:
                 # Generate filename from content type
-                content_type = part.get_content_type()
                 ext = content_type.split('/')[-1] if '/' in content_type else 'bin'
                 filename = f"attachment.{ext}"
             
             return Attachment(
                 filename=filename,
-                content_type=part.get_content_type(),
+                content_type=content_type,
                 content=payload,
                 size=len(payload),
                 content_id=part.get("Content-ID", "").strip('<>')
@@ -433,3 +439,34 @@ class EMLParser:
         except Exception as e:
             logger.warning(f"Error extracting attachment: {e}")
             return None
+    
+    def _get_extension_from_content_type(self, content_type: str) -> str:
+        """Get file extension from MIME content type."""
+        type_to_ext = {
+            'application/pdf': '.pdf',
+            'application/msword': '.doc',
+            'application/vnd.openxmlformats-officedocument.wordprocessingml.document': '.docx',
+            'application/vnd.ms-excel': '.xls',
+            'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': '.xlsx',
+            'application/vnd.ms-powerpoint': '.ppt',
+            'application/vnd.openxmlformats-officedocument.presentationml.presentation': '.pptx',
+            'image/jpeg': '.jpg',
+            'image/png': '.png',
+            'image/gif': '.gif',
+            'image/bmp': '.bmp',
+            'image/tiff': '.tiff',
+            'text/plain': '.txt',
+            'text/html': '.html',
+            'text/csv': '.csv',
+            'text/calendar': '.ics',
+            'message/rfc822': '.eml',
+            'application/vnd.ms-outlook': '.msg',
+            'application/rtf': '.rtf',
+            'application/zip': '.zip',
+            'application/x-zip-compressed': '.zip',
+            'audio/mpeg': '.mp3',
+            'audio/wav': '.wav',
+            'video/mp4': '.mp4',
+            'application/octet-stream': '.bin',
+        }
+        return type_to_ext.get(content_type.lower(), '.bin')

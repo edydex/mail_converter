@@ -590,9 +590,6 @@ class ConversionPipeline:
             if not self.config.keep_individual_pdfs:
                 shutil.rmtree(self.temp_dir, ignore_errors=True)
             
-            # Write log file
-            result.log_path = self._write_log(result)
-            
             result.success = len(result.errors) == 0
             
             self._report_progress(
@@ -608,6 +605,8 @@ class ConversionPipeline:
         finally:
             result.end_time = datetime.now()
             self.attachment_converter.cleanup()
+            # Write log file after end_time is set so duration is correct
+            result.log_path = self._write_log(result)
         
         return result
     

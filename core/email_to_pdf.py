@@ -288,6 +288,7 @@ class EmailToPDFConverter:
             border-collapse: collapse;
             max-width: 100% !important;
             table-layout: auto;
+            overflow: hidden;
         }}
         
         /* Only add padding to td/th if the table has explicit borders */
@@ -296,6 +297,7 @@ class EmailToPDFConverter:
             vertical-align: top;
             overflow-wrap: break-word;
             word-wrap: break-word;
+            overflow: hidden;
         }}
         
         /* Style tables that explicitly request borders (border > 0) */
@@ -679,9 +681,9 @@ class EmailToPDFConverter:
         """
         Scale down fixed width attributes that exceed page width.
         Instead of removing widths entirely (which breaks layout), we scale them
-        proportionally to fit within the printable area (~550px for letter with margins).
+        proportionally to fit within the printable area (~500px for letter with margins).
         """
-        MAX_WIDTH = 550  # Approximate printable width in pixels for letter size with margins
+        MAX_WIDTH = 500  # Approximate printable width in pixels for letter size with margins
         
         def scale_width_attr(match):
             """Scale width attribute if it exceeds max width."""

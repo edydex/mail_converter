@@ -1444,11 +1444,17 @@ class AttachmentConverter:
                     else:
                         organizer_email = organizer
                     
+                    # Skip MAILER-DAEMON (libpst artifact for meeting requests)
+                    if organizer_email.upper() == 'MAILER-DAEMON':
+                        organizer_email = None
+                        organizer_name = None
+                    
                     # Use name if available, otherwise email
                     if organizer_name:
                         current_event['organizer'] = organizer_name
-                    else:
+                    elif organizer_email:
                         current_event['organizer'] = organizer_email
+                    # If both are None/MAILER-DAEMON, don't set organizer
                 elif key == 'ATTENDEE':
                     if 'attendees' not in current_event:
                         current_event['attendees'] = []
