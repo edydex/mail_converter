@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Optional, List, Dict, Tuple
 from datetime import datetime
 import logging
+from bs4 import BeautifulSoup
 
 # Check for WeasyPrint availability
 # WeasyPrint requires GTK/GLib native libraries which may not be available on Windows
@@ -680,60 +681,58 @@ class EmailToPDFConverter:
     
     def _strip_fixed_table_widths(self, html_content: str) -> str:
         """
-        Remove or convert fixed width attributes that exceed page width.
-        For large widths (>400px), convert to 100% to let CSS handle the constraint.
-        This prevents text from overflowing the page boundaries.
+        Use BeautifulSoup to remove all fixed pixel widths from tables and cells.
+        This ensures text wraps properly on all platforms (especially Windows).
         """
-        MAX_WIDTH = 400  # Threshold above which we convert to 100%
-        
-        def convert_width_attr(match):
-            """Convert large width attribute to 100%."""
-            full_match = match.group(0)
-            width_val = match.group(1)
+        try:
+            soup = BeautifulSoup(html_content, 'html.parser')
             
-            # Skip percentage widths - they're responsive
-            if '%' in width_val:
-                return full_match
+            # Remove width attribute from tables, td, th, tr, tbody elements
+            for tag in soup.find_all(['table', 'td', 'th', 'tr', 'tbody', 'thead', 'tfoot']):
+                # Remove width attribute entirely
+                if tag.has_attr('width'):
+                    del tag['width']
+                
+                # Also strip width from inline styles
+                if tag.has_attr('style'):
+                    style = tag['style']
+                    # Remove width declarations from style
+                    style = re.sub(r'width\s*:\s*\d+(?:px)?\s*;?', '', style, flags=re.IGNORECASE)
+                    if style.strip():
+                        tag['style'] = style.strip()
+                    else:
+                        del tag['style']
             
-            try:
-                width_num = int(width_val)
-                if width_num > MAX_WIDTH:
-                    # Convert to 100% to let CSS max-width control it
-                    return ' width="100%"'
-                return full_match
-            except ValueError:
-                return full_match
-        
-        # Convert large width attributes to percentages
-        # Matches: width="600" width='600' width=600
+            # Also handle divs with fixed widths that are used as containers
+            for div in soup.find_all('div'):
+                if div.has_attr('style'):
+                    style = div['style']
+                    # Only remove large fixed widths (>400px)
+                    width_match = re.search(r'width\s*:\s*(\d+)px', style, re.IGNORECASE)
+                    if width_match and int(width_match.group(1)) > 400:
+                        style = re.sub(r'width\s*:\s*\d+px\s*;?', '', style, flags=re.IGNORECASE)
+                        if style.strip():
+                            div['style'] = style.strip()
+                        else:
+                            del div['style']
+            
+            return str(soup)
+        except Exception as e:
+            logger.warning(f"Failed to strip table widths with BeautifulSoup: {e}")
+            # Fallback to regex approach
+            return self._strip_fixed_table_widths_regex(html_content)
+    
+    def _strip_fixed_table_widths_regex(self, html_content: str) -> str:
+        """
+        Fallback regex-based method to remove fixed widths.
+        """
+        # Remove width attributes from table-related tags
         html_content = re.sub(
-            r'\s*width\s*=\s*["\']?([\d%]+)["\']?',
-            convert_width_attr,
+            r'(<(?:table|td|th|tr|tbody|thead|tfoot)[^>]*)\s+width\s*=\s*["\']?\d+["\']?',
+            r'\1',
             html_content,
             flags=re.IGNORECASE
         )
-        
-        def convert_inline_width(match):
-            """Convert large inline style width to 100%."""
-            full_match = match.group(0)
-            width_val = match.group(1)
-            
-            try:
-                width_num = int(width_val)
-                if width_num > MAX_WIDTH:
-                    return 'width: 100%;'
-                return full_match
-            except ValueError:
-                return full_match
-        
-        # Convert inline style width declarations that use large fixed pixels
-        html_content = re.sub(
-            r'width\s*:\s*(\d+)px\s*;?',
-            convert_inline_width,
-            html_content,
-            flags=re.IGNORECASE
-        )
-        
         return html_content
     
     def _constrain_images_without_dimensions(self, html_content: str) -> str:
