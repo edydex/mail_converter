@@ -9,6 +9,7 @@ Falls back to reportlab for plain text emails.
 import io
 import os
 import re
+import sys
 import base64
 import tempfile
 from pathlib import Path
@@ -16,6 +17,27 @@ from typing import Optional, List, Dict, Tuple
 from datetime import datetime
 import logging
 from bs4 import BeautifulSoup
+
+# Disable Windows DPI scaling for consistent PDF rendering
+# This prevents high-DPI displays (like Surface Pro) from affecting output
+if sys.platform == 'win32':
+    try:
+        import ctypes
+        # Set process to be DPI unaware (use raw pixels)
+        # PROCESS_DPI_UNAWARE = 0
+        # PROCESS_SYSTEM_DPI_AWARE = 1  
+        # PROCESS_PER_MONITOR_DPI_AWARE = 2
+        ctypes.windll.shcore.SetProcessDpiAwareness(0)
+    except Exception:
+        try:
+            # Fallback for older Windows versions
+            ctypes.windll.user32.SetProcessDPIAware()
+        except Exception:
+            pass
+    
+    # Also set environment variables that GTK/Cairo/Pango use
+    os.environ['GDK_SCALE'] = '1'
+    os.environ['GDK_DPI_SCALE'] = '1'
 
 # Check for WeasyPrint availability
 # WeasyPrint requires GTK/GLib native libraries which may not be available on Windows
