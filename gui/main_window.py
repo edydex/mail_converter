@@ -2,6 +2,9 @@
 Main Window Module
 
 Main application window for the Mail Converter application.
+Features two main tabs:
+- PDF Converter: Convert emails to PDF
+- Email Tools: Mailbox manipulation (compare, merge, dedupe, filter)
 """
 
 import os
@@ -19,7 +22,8 @@ from core.conversion_pipeline import (
     PipelineConfig, 
     PipelineResult,
     PipelineProgress,
-    PipelineStage
+    PipelineStage,
+    InputType
 )
 from core.duplicate_detector import DuplicateCertainty
 from core.eml_parser import EMLParser
@@ -28,6 +32,7 @@ from core.attachment_converter import AttachmentConverter
 from core.pdf_merger import PDFMerger
 from .progress_dialog import ProgressDialog
 from .settings_dialog import SettingsDialog
+from .email_tools_tab import EmailToolsTab
 
 logger = logging.getLogger(__name__)
 
@@ -43,12 +48,12 @@ class MainWindow:
             root: Tkinter root window
         """
         self.root = root
-        self.root.title("Mayo's Mail Converter - PST to PDF")
-        self.root.geometry("700x550")
-        self.root.minsize(600, 450)
+        self.root.title("Mayo's Mail Converter - Email to PDF")
+        self.root.geometry("750x600")
+        self.root.minsize(650, 500)
         
         # State
-        self.pst_path: Optional[str] = None
+        self.input_paths: list = []  # Support multiple inputs
         self.output_dir: Optional[str] = None
         self.pipeline: Optional[ConversionPipeline] = None
         self.conversion_thread: Optional[threading.Thread] = None
@@ -69,6 +74,9 @@ class MainWindow:
             'date_from': None,
             'date_to': None
         }
+        
+        # Backwards compatibility
+        self.pst_path: Optional[str] = None
         
         # Setup UI
         self._setup_styles()
@@ -100,75 +108,126 @@ class MainWindow:
     def _create_widgets(self):
         """Create all UI widgets."""
         # Main container
-        self.main_frame = ttk.Frame(self.root, padding="20")
+        self.main_frame = ttk.Frame(self.root, padding="10")
         self.main_frame.grid(row=0, column=0, sticky="nsew")
         
         self.root.columnconfigure(0, weight=1)
         self.root.rowconfigure(0, weight=1)
-        self.main_frame.columnconfigure(1, weight=1)
-        
-        row = 0
+        self.main_frame.columnconfigure(0, weight=1)
+        self.main_frame.rowconfigure(1, weight=1)
         
         # Title
+        title_frame = ttk.Frame(self.main_frame)
+        title_frame.grid(row=0, column=0, sticky="ew", pady=(0, 10))
+        
         title_label = ttk.Label(
-            self.main_frame, 
+            title_frame, 
             text="Mayo's Mail Converter",
             style='Title.TLabel'
         )
-        title_label.grid(row=row, column=0, columnspan=3, pady=(0, 5))
-        row += 1
+        title_label.pack()
         
         subtitle_label = ttk.Label(
-            self.main_frame,
-            text="Convert PST emails to PDF with attachments",
+            title_frame,
+            text="Email to PDF conversion & mailbox tools",
             style='Subtitle.TLabel'
         )
-        subtitle_label.grid(row=row, column=0, columnspan=3, pady=(0, 20))
-        row += 1
+        subtitle_label.pack()
         
-        # Separator
-        ttk.Separator(self.main_frame).grid(row=row, column=0, columnspan=3, sticky="ew", pady=10)
-        row += 1
+        # Create main notebook (tabs)
+        self.notebook = ttk.Notebook(self.main_frame)
+        self.notebook.grid(row=1, column=0, sticky="nsew")
         
-        # PST/EML File Selection
-        ttk.Label(self.main_frame, text="PST/EML File:").grid(
+        # Create PDF Converter tab
+        self.pdf_tab = ttk.Frame(self.notebook, padding="10")
+        self.notebook.add(self.pdf_tab, text="PDF Converter")
+        self._create_pdf_converter_tab()
+        
+        # Create Email Tools tab
+        self.tools_tab = ttk.Frame(self.notebook, padding="5")
+        self.notebook.add(self.tools_tab, text="Email Tools")
+        self.email_tools = EmailToolsTab(self.tools_tab)
+        
+        # Footer
+        footer_frame = ttk.Frame(self.main_frame)
+        footer_frame.grid(row=2, column=0, sticky="ew", pady=(5, 0))
+        
+        version_label = ttk.Label(
+            footer_frame,
+            text="v1.3.0",
+            foreground="gray"
+        )
+        version_label.pack(side=tk.RIGHT)
+    
+    def _create_pdf_converter_tab(self):
+        """Create the PDF Converter tab content."""
+        frame = self.pdf_tab
+        frame.columnconfigure(1, weight=1)
+        
+        row = 0
+        
+        # Input Selection Label
+        ttk.Label(frame, text="Input File(s)/Folder:").grid(
             row=row, column=0, sticky="w", pady=5
         )
         
-        self.pst_entry = ttk.Entry(self.main_frame, width=50)
+        self.pst_entry = ttk.Entry(frame, width=45)
         self.pst_entry.grid(row=row, column=1, sticky="ew", padx=5, pady=5)
         
+        # Button frame for browse options
+        browse_frame = ttk.Frame(frame)
+        browse_frame.grid(row=row, column=2, columnspan=2, pady=5, sticky="e")
+        
         self.browse_pst_btn = ttk.Button(
-            self.main_frame, 
-            text="Browse...",
-            command=self._browse_pst
+            browse_frame, 
+            text="Files...",
+            command=self._browse_files,
+            width=8
         )
-        self.browse_pst_btn.grid(row=row, column=2, pady=5)
+        self.browse_pst_btn.pack(side=tk.LEFT, padx=2)
+        
+        self.browse_folder_btn = ttk.Button(
+            browse_frame, 
+            text="Folder...",
+            command=self._browse_folder,
+            width=8
+        )
+        self.browse_folder_btn.pack(side=tk.LEFT, padx=2)
+        row += 1
+        
+        # Selected files indicator
+        self.files_count_label = ttk.Label(
+            frame,
+            text="",
+            foreground="gray"
+        )
+        self.files_count_label.grid(row=row, column=1, sticky="w", padx=5)
         row += 1
         
         # Output Directory Selection
-        ttk.Label(self.main_frame, text="Output Folder:").grid(
+        ttk.Label(frame, text="Output Folder:").grid(
             row=row, column=0, sticky="w", pady=5
         )
         
-        self.output_entry = ttk.Entry(self.main_frame, width=50)
+        self.output_entry = ttk.Entry(frame, width=45)
         self.output_entry.grid(row=row, column=1, sticky="ew", padx=5, pady=5)
         
         self.browse_output_btn = ttk.Button(
-            self.main_frame,
+            frame,
             text="Browse...",
-            command=self._browse_output
+            command=self._browse_output,
+            width=8
         )
-        self.browse_output_btn.grid(row=row, column=2, pady=5)
+        self.browse_output_btn.grid(row=row, column=2, pady=5, sticky="w", padx=2)
         row += 1
         
         # Separator
-        ttk.Separator(self.main_frame).grid(row=row, column=0, columnspan=3, sticky="ew", pady=15)
+        ttk.Separator(frame).grid(row=row, column=0, columnspan=4, sticky="ew", pady=10)
         row += 1
         
         # Options Frame
-        options_frame = ttk.LabelFrame(self.main_frame, text="Options", padding=10)
-        options_frame.grid(row=row, column=0, columnspan=3, sticky="ew", pady=10)
+        options_frame = ttk.LabelFrame(frame, text="Options", padding=10)
+        options_frame.grid(row=row, column=0, columnspan=4, sticky="ew", pady=10)
         options_frame.columnconfigure(1, weight=1)
         row += 1
         
@@ -233,30 +292,48 @@ class MainWindow:
         )
         merge_folders_check.grid(row=4, column=0, columnspan=2, sticky="w", pady=2)
         
+        # Combine Folders By Name Option (for multiple PST/MBOX files)
+        self.combine_folders_var = tk.BooleanVar(value=False)
+        self.combine_folders_check = ttk.Checkbutton(
+            options_frame,
+            text="Combine folders by name across multiple sources",
+            variable=self.combine_folders_var
+        )
+        self.combine_folders_check.grid(row=5, column=0, columnspan=2, sticky="w", pady=2)
+        
+        # Add tooltip-like help text
+        combine_help = ttk.Label(
+            options_frame,
+            text="(e.g., 'Inbox' from user1 + 'Inbox' from user2 → single 'Inbox' folder)",
+            foreground="gray",
+            font=('Helvetica', 9)
+        )
+        combine_help.grid(row=6, column=0, columnspan=2, sticky="w", padx=20, pady=(0, 5))
+        
         # Advanced Settings Button
         self.settings_btn = ttk.Button(
             options_frame,
             text="Advanced Settings...",
             command=self._show_settings
         )
-        self.settings_btn.grid(row=5, column=1, sticky="e", pady=2)
+        self.settings_btn.grid(row=7, column=1, sticky="e", pady=2)
         
         # Status Frame
-        status_frame = ttk.Frame(self.main_frame)
-        status_frame.grid(row=row, column=0, columnspan=3, sticky="ew", pady=10)
+        status_frame = ttk.Frame(frame)
+        status_frame.grid(row=row, column=0, columnspan=4, sticky="ew", pady=10)
         status_frame.columnconfigure(0, weight=1)
         row += 1
         
         self.status_label = ttk.Label(
             status_frame,
-            text="Ready. Select a PST file to begin.",
+            text="Ready. Select file(s) or a folder to begin.",
             style='Status.TLabel'
         )
         self.status_label.grid(row=0, column=0, sticky="w")
         
         # Button Frame
-        button_frame = ttk.Frame(self.main_frame)
-        button_frame.grid(row=row, column=0, columnspan=3, pady=20)
+        button_frame = ttk.Frame(frame)
+        button_frame.grid(row=row, column=0, columnspan=4, pady=15)
         row += 1
         
         self.convert_btn = ttk.Button(
@@ -274,17 +351,6 @@ class MainWindow:
             state=tk.DISABLED
         )
         self.cancel_btn.pack(side=tk.LEFT, padx=10)
-        
-        # Footer
-        footer_frame = ttk.Frame(self.main_frame)
-        footer_frame.grid(row=row, column=0, columnspan=3, sticky="ew")
-        
-        version_label = ttk.Label(
-            footer_frame,
-            text="v1.1.1",
-            foreground="gray"
-        )
-        version_label.pack(side=tk.RIGHT)
     
     def _bind_events(self):
         """Bind event handlers."""
@@ -302,31 +368,114 @@ class MainWindow:
         y = (self.root.winfo_screenheight() // 2) - (height // 2)
         self.root.geometry(f'{width}x{height}+{x}+{y}')
     
-    def _browse_pst(self):
-        """Open file dialog to select PST or EML file."""
-        filepath = filedialog.askopenfilename(
-            title="Select PST or EML File",
+    def _browse_files(self):
+        """Open file dialog to select email files (PST, MBOX, MSG, EML)."""
+        filepaths = filedialog.askopenfilenames(
+            title="Select Email File(s)",
             filetypes=[
-                ("Email Files", "*.pst *.eml"),
+                ("All Email Files", "*.pst *.mbox *.msg *.eml"),
                 ("PST Files", "*.pst"),
+                ("MBOX Files", "*.mbox"),
+                ("MSG Files", "*.msg"),
                 ("EML Files", "*.eml"),
                 ("All Files", "*.*")
             ]
         )
         
-        if filepath:
-            self.pst_path = filepath
+        if filepaths:
+            self.input_paths = list(filepaths)
+            # For backwards compatibility
+            self.pst_path = filepaths[0] if filepaths else None
+            
+            # Display in entry
+            if len(filepaths) == 1:
+                display_text = filepaths[0]
+            else:
+                display_text = f"{len(filepaths)} files selected"
+            
             self.pst_entry.delete(0, tk.END)
-            self.pst_entry.insert(0, filepath)
+            self.pst_entry.insert(0, display_text)
+            
+            # Update files count label
+            self._update_files_count()
             
             # Auto-suggest output directory
             if not self.output_entry.get():
-                parent_dir = Path(filepath).parent
-                output_name = Path(filepath).stem + "_converted"
+                parent_dir = Path(filepaths[0]).parent
+                if len(filepaths) == 1:
+                    output_name = Path(filepaths[0]).stem + "_converted"
+                else:
+                    output_name = "emails_converted"
                 suggested_output = parent_dir / output_name
                 self.output_entry.insert(0, str(suggested_output))
             
-            self._update_status(f"Selected: {Path(filepath).name}")
+            self._update_status(f"Selected {len(filepaths)} file(s)")
+    
+    def _browse_folder(self):
+        """Open dialog to select a folder containing email files."""
+        dirpath = filedialog.askdirectory(
+            title="Select Folder with Email Files"
+        )
+        
+        if dirpath:
+            self.input_paths = [dirpath]
+            # For backwards compatibility
+            self.pst_path = dirpath
+            
+            self.pst_entry.delete(0, tk.END)
+            self.pst_entry.insert(0, dirpath)
+            
+            # Count files in folder
+            self._update_files_count()
+            
+            # Auto-suggest output directory
+            if not self.output_entry.get():
+                parent_dir = Path(dirpath).parent
+                output_name = Path(dirpath).name + "_converted"
+                suggested_output = parent_dir / output_name
+                self.output_entry.insert(0, str(suggested_output))
+            
+            self._update_status(f"Selected folder: {Path(dirpath).name}")
+    
+    def _update_files_count(self):
+        """Update the file count label based on selected inputs."""
+        if not self.input_paths:
+            self.files_count_label.config(text="")
+            return
+        
+        if len(self.input_paths) == 1 and Path(self.input_paths[0]).is_dir():
+            # Count email files in folder
+            folder = Path(self.input_paths[0])
+            pst_count = len(list(folder.glob("*.pst")) + list(folder.glob("*.PST")))
+            mbox_count = len(list(folder.glob("*.mbox")) + list(folder.glob("*.MBOX")))
+            msg_count = len(list(folder.glob("**/*.msg")) + list(folder.glob("**/*.MSG")))
+            eml_count = len(list(folder.glob("**/*.eml")) + list(folder.glob("**/*.EML")))
+            
+            parts = []
+            if pst_count: parts.append(f"{pst_count} PST")
+            if mbox_count: parts.append(f"{mbox_count} MBOX")
+            if msg_count: parts.append(f"{msg_count} MSG")
+            if eml_count: parts.append(f"{eml_count} EML")
+            
+            if parts:
+                self.files_count_label.config(text=f"Found: {', '.join(parts)}")
+            else:
+                self.files_count_label.config(text="No email files found in folder")
+        elif len(self.input_paths) > 1:
+            # List file types
+            exts = {}
+            for p in self.input_paths:
+                ext = Path(p).suffix.lower().lstrip('.')
+                exts[ext] = exts.get(ext, 0) + 1
+            
+            parts = [f"{count} {ext.upper()}" for ext, count in exts.items()]
+            self.files_count_label.config(text=f"Selected: {', '.join(parts)}")
+        else:
+            self.files_count_label.config(text="")
+    
+    def _browse_pst(self):
+        """Legacy method - redirects to _browse_files."""
+        self._browse_files()
     
     def _browse_output(self):
         """Open dialog to select output directory."""
@@ -352,22 +501,38 @@ class MainWindow:
     
     def _validate_inputs(self) -> bool:
         """Validate inputs before starting conversion."""
-        pst_path = self.pst_entry.get().strip()
+        input_text = self.pst_entry.get().strip()
         output_dir = self.output_entry.get().strip()
         
-        if not pst_path:
-            messagebox.showerror("Error", "Please select a PST or EML file.")
+        if not input_text:
+            messagebox.showerror("Error", "Please select email file(s) or a folder.")
             return False
         
-        if not os.path.isfile(pst_path):
-            messagebox.showerror("Error", f"File not found:\n{pst_path}")
-            return False
+        # Check if we have input_paths set
+        if not self.input_paths:
+            # Try to use the entry text as a single path
+            if os.path.exists(input_text):
+                self.input_paths = [input_text]
+            else:
+                messagebox.showerror("Error", f"Path not found:\n{input_text}")
+                return False
         
-        # Validate file extension
-        ext = Path(pst_path).suffix.lower()
-        if ext not in ['.pst', '.eml']:
-            messagebox.showerror("Error", f"Unsupported file type: {ext}\nPlease select a .pst or .eml file.")
-            return False
+        # Validate all input paths exist
+        for path in self.input_paths:
+            if not os.path.exists(path):
+                messagebox.showerror("Error", f"Path not found:\n{path}")
+                return False
+            
+            # Validate file extension for files (not folders)
+            if os.path.isfile(path):
+                ext = Path(path).suffix.lower()
+                if ext not in ['.pst', '.mbox', '.msg', '.eml']:
+                    messagebox.showerror(
+                        "Error", 
+                        f"Unsupported file type: {ext}\n"
+                        "Supported types: .pst, .mbox, .msg, .eml"
+                    )
+                    return False
         
         if not output_dir:
             messagebox.showerror("Error", "Please select an output folder.")
@@ -388,15 +553,16 @@ class MainWindow:
             return
         
         # Get values from UI
-        input_path = self.pst_entry.get().strip()
         output_dir = self.output_entry.get().strip()
         
-        # Check if this is an EML file - handle separately
-        if Path(input_path).suffix.lower() == '.eml':
-            self._convert_eml_file(input_path, output_dir)
+        # Check if this is a single EML file - handle with simple converter
+        if (len(self.input_paths) == 1 and 
+            os.path.isfile(self.input_paths[0]) and
+            Path(self.input_paths[0]).suffix.lower() == '.eml'):
+            self._convert_eml_file(self.input_paths[0], output_dir)
             return
         
-        # Create config for PST conversion
+        # Create config for full pipeline conversion
         certainty_map = {
             'LOW': DuplicateCertainty.LOW,
             'MEDIUM': DuplicateCertainty.MEDIUM,
@@ -405,7 +571,8 @@ class MainWindow:
         }
         
         config = PipelineConfig(
-            pst_path=input_path,
+            pst_path=self.input_paths[0] if self.input_paths else "",
+            input_paths=self.input_paths,
             output_dir=output_dir,
             ocr_enabled=self.ocr_var.get(),
             detect_duplicates=self.dup_var.get(),
@@ -422,6 +589,7 @@ class MainWindow:
             page_margin=self.settings.get('page_margin', 0.5),
             load_remote_images=self.settings.get('load_remote_images', False),
             merge_folders=self.merge_folders_var.get(),
+            combine_folders_by_name=self.combine_folders_var.get(),
             rename_emls=self.settings.get('rename_emls', True),
             skip_deleted_items=self.settings.get('skip_deleted_items', True),
             date_from=self.settings.get('date_from'),

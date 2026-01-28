@@ -277,8 +277,8 @@ jobs:
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       with:
-        tag_name: "v1.1.${{ github.run_number }}"
-        name: "Mayo's Mail Converter v1.1.${{ github.run_number }}"
+        tag_name: "v1.3.${{ github.run_number }}"
+        name: "Mayo's Mail Converter v1.3.${{ github.run_number }}"
         body: |
           ## Mayo's Mail Converter - Windows Executable
           
@@ -298,10 +298,19 @@ jobs:
           4. Click "Convert to PDF"
           
           ### Features:
-          - Convert PST emails to PDF format
+          **PDF Converter Tab:**
+          - Convert PST, MBOX, MSG, EML emails to PDF format
           - Process and convert attachments
           - Organize by folder structure
           - Optional separator pages
+          
+          **Email Tools Tab (NEW):**
+          - Compare mailboxes (find common/unique emails)
+          - Merge multiple mailboxes
+          - Remove duplicates
+          - Filter by sender/recipient
+          - Convert between formats (PST, MBOX, EML)
+          - PST output supported with Outlook installed
           
           ---
           *Built automatically with GitHub Actions*

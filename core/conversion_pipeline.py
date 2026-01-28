@@ -1,7 +1,8 @@
 """
 Conversion Pipeline Module
 
-Orchestrates the complete PST to PDF conversion process.
+Orchestrates the complete PST/MBOX/MSG/EML to PDF conversion process.
+Supports multiple input types and combining folders by name.
 """
 
 import os
@@ -13,8 +14,11 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 import json
+import glob
 
 from .pst_extractor import PSTExtractor, ExtractionResult
+from .mbox_extractor import MBOXExtractor, MboxExtractionResult
+from .msg_parser import MSGParser
 from .eml_parser import EMLParser, ParsedEmail
 from .email_to_pdf import EmailToPDFConverter
 from .attachment_converter import AttachmentConverter, ConversionStatus
@@ -52,12 +56,28 @@ class PipelineProgress:
     message: str
 
 
+class InputType(Enum):
+    """Types of input files/folders"""
+    PST = "pst"
+    MBOX = "mbox"
+    EML = "eml"
+    MSG = "msg"
+    EML_FOLDER = "eml_folder"
+    PST_FOLDER = "pst_folder"
+    MBOX_FOLDER = "mbox_folder"
+    MIXED_FOLDER = "mixed_folder"
+
+
 @dataclass
 class PipelineConfig:
     """Configuration for the conversion pipeline"""
-    # Input/Output
-    pst_path: str
+    # Input/Output - now supports multiple input paths
+    pst_path: str  # Kept for backwards compatibility
     output_dir: str
+    
+    # New: List of input paths (files or folders)
+    input_paths: List[str] = field(default_factory=list)
+    input_type: Optional[InputType] = None  # Auto-detected if not specified
     
     # Duplicate detection
     detect_duplicates: bool = True
@@ -81,10 +101,18 @@ class PipelineConfig:
     load_remote_images: bool = False  # Load images from the web (security concern)
     merge_folders: bool = False  # True = one combined PDF, False = separate PDF per folder
     
+    # New: Combine folders by name across multiple PST/MBOX files
+    combine_folders_by_name: bool = False
+    
     # Processing
     preserve_pst_structure: bool = True
     rename_emls: bool = True  # Rename EMLs to YYYYMMDD_HHMMSS_subject.eml
     skip_deleted_items: bool = True  # Skip emails from "Deleted Items" folder
+    
+    def __post_init__(self):
+        """Initialize input_paths from pst_path if not provided."""
+        if not self.input_paths and self.pst_path:
+            self.input_paths = [self.pst_path]
 
 
 @dataclass
@@ -121,15 +149,20 @@ class PipelineResult:
 
 class ConversionPipeline:
     """
-    Main orchestrator for PST to PDF conversion.
+    Main orchestrator for PST/MBOX/MSG/EML to PDF conversion.
     
     Handles the complete workflow:
-    1. Extract EMLs from PST
+    1. Extract/collect EMLs from various sources (PST, MBOX, MSG, EML files/folders)
     2. Parse EMLs and detect duplicates
     3. Convert emails to PDF
     4. Convert attachments to PDF
     5. Merge email + attachments into individual PDFs
     6. Merge all into chronological combined PDF
+    
+    Supports:
+    - Multiple input files/folders
+    - PST, MBOX, MSG, EML formats
+    - Combining folders by name across multiple sources
     """
     
     def __init__(
@@ -151,6 +184,8 @@ class ConversionPipeline:
         self.pst_extractor = PSTExtractor(
             progress_callback=self._pst_progress
         )
+        self.mbox_extractor = MBOXExtractor()
+        self.msg_parser = MSGParser()
         self.eml_parser = EMLParser()
         self.email_converter = EmailToPDFConverter(
             page_margin=config.page_margin,
@@ -269,6 +304,278 @@ class ConversionPipeline:
             current, total, "", message
         )
     
+    def _detect_input_type(self, path: str) -> InputType:
+        """
+        Auto-detect the type of input from a file path.
+        
+        Args:
+            path: Path to file or folder
+            
+        Returns:
+            Detected InputType
+        """
+        p = Path(path)
+        
+        if p.is_dir():
+            # Check what files are in the folder
+            has_pst = any(p.glob("*.pst")) or any(p.glob("*.PST"))
+            has_mbox = any(p.glob("*.mbox")) or any(p.glob("*.MBOX"))
+            has_eml = any(p.glob("*.eml")) or any(p.glob("*.EML"))
+            has_msg = any(p.glob("*.msg")) or any(p.glob("*.MSG"))
+            
+            if has_pst and not (has_mbox or has_eml or has_msg):
+                return InputType.PST_FOLDER
+            elif has_mbox and not (has_pst or has_eml or has_msg):
+                return InputType.MBOX_FOLDER
+            elif has_eml and not (has_pst or has_mbox):
+                # EML folder may also have MSG files
+                return InputType.EML_FOLDER
+            elif has_msg and not (has_pst or has_mbox or has_eml):
+                return InputType.EML_FOLDER  # Treat MSG-only folders as EML folders
+            else:
+                return InputType.MIXED_FOLDER
+        else:
+            # Single file
+            ext = p.suffix.lower()
+            if ext == ".pst":
+                return InputType.PST
+            elif ext == ".mbox":
+                return InputType.MBOX
+            elif ext == ".eml":
+                return InputType.EML
+            elif ext == ".msg":
+                return InputType.MSG
+            else:
+                # Try to detect by content
+                logger.warning(f"Unknown file type: {path}")
+                return InputType.EML  # Default to EML
+    
+    def _extract_emails_from_inputs(self, result: PipelineResult) -> List[Tuple[Path, str]]:
+        """
+        Extract/collect EML files from all input sources.
+        
+        This method handles:
+        - PST files: Extract using pst_extractor
+        - MBOX files: Extract using mbox_extractor
+        - MSG files: Convert to EML using msg_parser
+        - EML files: Copy directly
+        - Folders: Process contents based on detected type
+        
+        Args:
+            result: PipelineResult to update with stats
+            
+        Returns:
+            List of (eml_path, folder_name) tuples where folder_name is used
+            for organizing output (used for combine_folders_by_name feature)
+        """
+        all_emls: List[Tuple[Path, str]] = []  # (eml_path, source_folder_name)
+        
+        for input_path in self.config.input_paths:
+            if self._cancelled:
+                break
+            
+            input_type = self._detect_input_type(input_path)
+            logger.info(f"Processing input: {input_path} (detected type: {input_type.value})")
+            
+            if input_type == InputType.PST:
+                emls = self._extract_from_pst(input_path, result)
+                all_emls.extend(emls)
+            
+            elif input_type == InputType.MBOX:
+                emls = self._extract_from_mbox(input_path, result)
+                all_emls.extend(emls)
+            
+            elif input_type == InputType.MSG:
+                eml = self._convert_msg_to_eml(input_path, result)
+                if eml:
+                    all_emls.append(eml)
+            
+            elif input_type == InputType.EML:
+                eml = self._copy_eml(input_path, result)
+                if eml:
+                    all_emls.append(eml)
+            
+            elif input_type in (InputType.PST_FOLDER, InputType.MBOX_FOLDER, 
+                               InputType.EML_FOLDER, InputType.MIXED_FOLDER):
+                emls = self._process_folder(input_path, input_type, result)
+                all_emls.extend(emls)
+        
+        return all_emls
+    
+    def _extract_from_pst(self, pst_path: str, result: PipelineResult) -> List[Tuple[Path, str]]:
+        """Extract EMLs from a PST file."""
+        pst_name = Path(pst_path).stem
+        output_subdir = self.emls_dir / pst_name
+        output_subdir.mkdir(parents=True, exist_ok=True)
+        
+        self._report_progress(
+            PipelineStage.EXTRACTING_PST, 0, 1,
+            pst_path, f"Extracting from PST: {pst_name}..."
+        )
+        
+        extraction = self.pst_extractor.extract(
+            pst_path,
+            str(output_subdir),
+            preserve_structure=self.config.preserve_pst_structure
+        )
+        
+        if not extraction.success:
+            result.errors.extend(extraction.errors)
+            return []
+        
+        result.emails_found += extraction.eml_count
+        result.warnings.extend(extraction.warnings)
+        
+        # Collect EML paths with folder info
+        emls: List[Tuple[Path, str]] = []
+        for eml_path in self.pst_extractor.get_extracted_emls(str(output_subdir)):
+            # Get relative folder within PST
+            try:
+                rel_path = eml_path.relative_to(output_subdir)
+                folder_name = str(rel_path.parent)
+                if folder_name == ".":
+                    folder_name = "Inbox"  # Default folder name
+            except ValueError:
+                folder_name = "Inbox"
+            
+            emls.append((eml_path, folder_name))
+        
+        return emls
+    
+    def _extract_from_mbox(self, mbox_path: str, result: PipelineResult) -> List[Tuple[Path, str]]:
+        """Extract EMLs from an MBOX file."""
+        mbox_name = Path(mbox_path).stem
+        output_subdir = self.emls_dir / mbox_name
+        output_subdir.mkdir(parents=True, exist_ok=True)
+        
+        self._report_progress(
+            PipelineStage.EXTRACTING_PST, 0, 1,
+            mbox_path, f"Extracting from MBOX: {mbox_name}..."
+        )
+        
+        extraction_result = self.mbox_extractor.extract(
+            mbox_path,
+            str(output_subdir)
+        )
+        
+        if not extraction_result.success:
+            result.errors.extend(extraction_result.errors)
+            return []
+        
+        result.emails_found += extraction_result.email_count
+        result.warnings.extend(extraction_result.warnings)
+        
+        # For MBOX, use the filename as the folder name
+        emls: List[Tuple[Path, str]] = []
+        for eml_path in extraction_result.extracted_files:
+            emls.append((Path(eml_path), mbox_name))
+        
+        return emls
+    
+    def _convert_msg_to_eml(self, msg_path: str, result: PipelineResult) -> Optional[Tuple[Path, str]]:
+        """Convert a MSG file to EML format."""
+        msg_name = Path(msg_path).stem
+        
+        self._report_progress(
+            PipelineStage.EXTRACTING_PST, 0, 1,
+            msg_path, f"Converting MSG: {msg_name}..."
+        )
+        
+        try:
+            # Convert MSG to EML
+            eml_content = self.msg_parser.convert_to_eml(msg_path)
+            if eml_content:
+                eml_path = self.emls_dir / f"{msg_name}.eml"
+                with open(eml_path, 'wb') as f:
+                    f.write(eml_content)
+                result.emails_found += 1
+                return (eml_path, "")  # No folder for single MSG
+        except Exception as e:
+            result.warnings.append(f"Error converting MSG {msg_path}: {e}")
+            logger.warning(f"Error converting MSG {msg_path}: {e}")
+        
+        return None
+    
+    def _copy_eml(self, eml_path: str, result: PipelineResult) -> Optional[Tuple[Path, str]]:
+        """Copy an EML file to the working directory."""
+        src = Path(eml_path)
+        dest = self.emls_dir / src.name
+        
+        # Handle name collision
+        counter = 1
+        while dest.exists():
+            dest = self.emls_dir / f"{src.stem}_{counter}{src.suffix}"
+            counter += 1
+        
+        try:
+            shutil.copy(src, dest)
+            result.emails_found += 1
+            return (dest, "")  # No folder for single EML
+        except Exception as e:
+            result.warnings.append(f"Error copying EML {eml_path}: {e}")
+            logger.warning(f"Error copying EML {eml_path}: {e}")
+            return None
+    
+    def _process_folder(
+        self, 
+        folder_path: str, 
+        input_type: InputType, 
+        result: PipelineResult
+    ) -> List[Tuple[Path, str]]:
+        """Process a folder containing email files."""
+        folder = Path(folder_path)
+        emls: List[Tuple[Path, str]] = []
+        
+        self._report_progress(
+            PipelineStage.EXTRACTING_PST, 0, 1,
+            folder_path, f"Processing folder: {folder.name}..."
+        )
+        
+        # Process PST files
+        for pst_file in list(folder.glob("*.pst")) + list(folder.glob("*.PST")):
+            pst_emls = self._extract_from_pst(str(pst_file), result)
+            emls.extend(pst_emls)
+        
+        # Process MBOX files
+        for mbox_file in list(folder.glob("*.mbox")) + list(folder.glob("*.MBOX")):
+            mbox_emls = self._extract_from_mbox(str(mbox_file), result)
+            emls.extend(mbox_emls)
+        
+        # Process MSG files
+        for msg_file in list(folder.glob("*.msg")) + list(folder.glob("*.MSG")):
+            msg_result = self._convert_msg_to_eml(str(msg_file), result)
+            if msg_result:
+                emls.append(msg_result)
+        
+        # Process EML files - preserve folder structure
+        for eml_file in list(folder.glob("**/*.eml")) + list(folder.glob("**/*.EML")):
+            try:
+                # Get relative path within the input folder
+                rel_path = eml_file.relative_to(folder)
+                folder_name = str(rel_path.parent)
+                if folder_name == ".":
+                    folder_name = folder.name
+                
+                # Copy to working directory preserving structure
+                dest_folder = self.emls_dir / folder_name
+                dest_folder.mkdir(parents=True, exist_ok=True)
+                dest = dest_folder / eml_file.name
+                
+                # Handle name collision
+                counter = 1
+                while dest.exists():
+                    dest = dest_folder / f"{eml_file.stem}_{counter}{eml_file.suffix}"
+                    counter += 1
+                
+                shutil.copy(eml_file, dest)
+                result.emails_found += 1
+                emls.append((dest, folder_name))
+            except Exception as e:
+                result.warnings.append(f"Error copying EML {eml_file}: {e}")
+                logger.warning(f"Error copying EML {eml_file}: {e}")
+        
+        return emls
+    
     def cancel(self):
         """Cancel the pipeline execution."""
         self._cancelled = True
@@ -288,44 +595,37 @@ class ConversionPipeline:
         )
         
         try:
-            # Stage 1: Extract PST
+            # Stage 1: Extract/collect emails from all inputs
             self._report_progress(
                 PipelineStage.EXTRACTING_PST, 0, 1, 
-                self.config.pst_path, "Extracting emails from PST..."
+                "", "Extracting emails from input sources..."
             )
             
-            extraction = self.pst_extractor.extract(
-                self.config.pst_path,
-                str(self.emls_dir),
-                preserve_structure=self.config.preserve_pst_structure
-            )
+            # Get all EMLs with their folder information
+            all_emls = self._extract_emails_from_inputs(result)
             
-            if not extraction.success:
-                result.errors.extend(extraction.errors)
+            if not all_emls:
+                result.errors.append("No emails found in any input source")
                 result.stage_reached = PipelineStage.EXTRACTING_PST
                 return result
-            
-            result.emails_found = extraction.eml_count
-            result.warnings.extend(extraction.warnings)
             
             if self._cancelled:
                 return self._handle_cancellation(result)
             
             # Stage 2: Parse emails
             self._report_progress(
-                PipelineStage.PARSING_EMAILS, 0, extraction.eml_count,
+                PipelineStage.PARSING_EMAILS, 0, len(all_emls),
                 "", "Parsing extracted emails..."
             )
             
-            eml_files = self.pst_extractor.get_extracted_emls(str(self.emls_dir))
-            parsed_emails: List[Tuple[ParsedEmail, Path]] = []
+            parsed_emails: List[Tuple[ParsedEmail, Path, str]] = []  # (parsed, path, folder_name)
             
-            for i, eml_path in enumerate(eml_files):
+            for i, (eml_path, source_folder) in enumerate(all_emls):
                 if self._cancelled:
                     return self._handle_cancellation(result)
                 
                 self._report_progress(
-                    PipelineStage.PARSING_EMAILS, i + 1, len(eml_files),
+                    PipelineStage.PARSING_EMAILS, i + 1, len(all_emls),
                     eml_path.name, f"Parsing {eml_path.name}..."
                 )
                 
@@ -336,7 +636,6 @@ class ConversionPipeline:
                     if self.config.rename_emls:
                         new_name = f"{email_data.get_output_filename()}.eml"
                         new_path = eml_path.parent / new_name
-                        # Avoid overwriting if name collision
                         counter = 1
                         while new_path.exists() and new_path != eml_path:
                             new_name = f"{email_data.get_output_filename()}_{counter}.eml"
@@ -346,24 +645,22 @@ class ConversionPipeline:
                             eml_path.rename(new_path)
                             eml_path = new_path
                     
-                    # Determine folder path for per-folder duplicate detection
-                    try:
-                        relative_eml_path = eml_path.relative_to(self.emls_dir)
-                        folder_path = str(relative_eml_path.parent)
-                        if folder_path == ".":
-                            folder_path = ""
-                    except ValueError:
-                        folder_path = ""
+                    # Determine effective folder path
+                    # If combine_folders_by_name is enabled, use just the folder name (e.g., "Inbox")
+                    # Otherwise, use the full source path (e.g., "mailbox1/Inbox")
+                    if self.config.combine_folders_by_name and source_folder:
+                        # Use only the last folder name (e.g., "Inbox" from "MailMeter/Inbox")
+                        folder_path = Path(source_folder).name
+                    else:
+                        folder_path = source_folder
                     
                     # Check for duplicates
                     if self.detect_duplicates:
                         fp = create_fingerprint_from_parsed_email(email_data, str(eml_path))
                         
                         if self.duplicate_detector:
-                            # Global detector (merge_folders=True)
                             duplicate = self.duplicate_detector.add_email(fp)
                         else:
-                            # Per-folder detector (merge_folders=False)
                             if folder_path not in self.per_folder_detectors:
                                 self.per_folder_detectors[folder_path] = DuplicateDetector(
                                     min_certainty=self.duplicate_certainty
@@ -377,7 +674,7 @@ class ConversionPipeline:
                     
                     # Skip "Deleted Items" folder if configured
                     if self.config.skip_deleted_items:
-                        folder_lower = folder_path.lower()
+                        folder_lower = source_folder.lower()
                         folder_parts = folder_lower.replace("\\", "/").split("/")
                         is_deleted = (
                             "deleted items" in folder_lower or
@@ -388,7 +685,7 @@ class ConversionPipeline:
                             logger.info(f"Skipping email from Deleted Items: {eml_path.name}")
                             continue
                     
-                    # Apply date filter (for future use)
+                    # Apply date filter
                     if self.config.date_from and email_data.date:
                         if email_data.date < self.config.date_from:
                             continue
@@ -396,7 +693,7 @@ class ConversionPipeline:
                         if email_data.date > self.config.date_to:
                             continue
                     
-                    parsed_emails.append((email_data, eml_path))
+                    parsed_emails.append((email_data, eml_path, folder_path))
                 
                 except Exception as e:
                     result.warnings.append(f"Error parsing {eml_path.name}: {e}")
@@ -415,26 +712,15 @@ class ConversionPipeline:
             )
             
             # Track PDFs by folder for separate combined PDFs option
-            # Key: folder relative path, Value: list of (pdf_path, timestamp)
             pdfs_by_folder: Dict[str, List[Tuple[Path, str]]] = {}
-            individual_pdfs: List[Tuple[Path, str]] = []  # (path, timestamp)
+            individual_pdfs: List[Tuple[Path, str]] = []
             
-            for i, (email_data, eml_path) in enumerate(parsed_emails):
+            for i, (email_data, eml_path, folder_path) in enumerate(parsed_emails):
                 if self._cancelled:
                     return self._handle_cancellation(result)
                 
                 output_name = email_data.get_output_filename()
                 timestamp = email_data.get_timestamp_prefix()
-                
-                # Determine folder structure relative to emls_dir
-                try:
-                    relative_eml_path = eml_path.relative_to(self.emls_dir)
-                    # Get parent folder(s) - e.g., "Exported MailMeter E-Mail/Inbox"
-                    folder_path = str(relative_eml_path.parent)
-                    if folder_path == ".":
-                        folder_path = ""
-                except ValueError:
-                    folder_path = ""
                 
                 self._report_progress(
                     PipelineStage.CONVERTING_EMAILS, i + 1, len(parsed_emails),
@@ -447,7 +733,6 @@ class ConversionPipeline:
                     self.email_converter.convert_email_to_pdf(email_data, email_pdf_path)
                     
                     # Convert attachments
-                    # Each item is (path, is_placeholder) - is_placeholder=True for unconverted files
                     attachment_pdfs = []
                     
                     for j, attachment in enumerate(email_data.attachments):
@@ -470,7 +755,6 @@ class ConversionPipeline:
                         )
                         
                         if conv_result.status in (ConversionStatus.SUCCESS, ConversionStatus.PARTIAL):
-                            # Track if this is a placeholder (PARTIAL = not converted, embedded)
                             is_placeholder = conv_result.status == ConversionStatus.PARTIAL
                             attachment_pdfs.append((conv_result.output_path, is_placeholder))
                             result.attachments_converted += 1
@@ -505,7 +789,6 @@ class ConversionPipeline:
                         if not merge_result.success:
                             result.warnings.extend(merge_result.errors)
                     else:
-                        # Just copy email PDF
                         shutil.copy(email_pdf_path, final_pdf_path)
                     
                     individual_pdfs.append((final_pdf_path, timestamp))
@@ -557,7 +840,6 @@ class ConversionPipeline:
                         
                         # Create folder name for output
                         if folder_path:
-                            # Sanitize folder path for filename
                             safe_folder_name = folder_path.replace("/", "_").replace("\\", "_")
                             combined_filename = f"combined_{safe_folder_name}.pdf"
                         else:
@@ -578,7 +860,6 @@ class ConversionPipeline:
                         )
                         
                         if merge_result.success:
-                            # Store first combined PDF path (or could store all)
                             if result.combined_pdf_path is None:
                                 result.combined_pdf_path = combined_path
                         else:
@@ -605,7 +886,6 @@ class ConversionPipeline:
         finally:
             result.end_time = datetime.now()
             self.attachment_converter.cleanup()
-            # Write log file after end_time is set so duration is correct
             result.log_path = self._write_log(result)
         
         return result
@@ -624,10 +904,13 @@ class ConversionPipeline:
             f.write("Mayo's Mail Converter - Conversion Log\n")
             f.write("=" * 50 + "\n\n")
             
-            f.write(f"Input: {self.config.pst_path}\n")
-            f.write(f"Output: {self.config.output_dir}\n")
+            f.write("Input(s):\n")
+            for input_path in self.config.input_paths:
+                f.write(f"  - {input_path}\n")
+            f.write(f"\nOutput: {self.config.output_dir}\n")
             f.write(f"Date: {result.start_time}\n")
-            f.write(f"Duration: {result.duration_seconds:.1f} seconds\n\n")
+            f.write(f"Duration: {result.duration_seconds:.1f} seconds\n")
+            f.write(f"Combine folders by name: {self.config.combine_folders_by_name}\n\n")
             
             f.write("Statistics:\n")
             f.write(f"  - Emails found: {result.emails_found}\n")

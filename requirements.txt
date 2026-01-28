@@ -26,5 +26,8 @@ weasyprint>=60.0
 pytz>=2023.3
 python-dateutil>=2.8.2
 
+# Windows-only: PST writing via Outlook COM (optional)
+pywin32>=306; sys_platform == 'win32'
+
 # Building Executable (dev only)
 pyinstaller>=5.0.0
