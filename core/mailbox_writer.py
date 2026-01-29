@@ -285,27 +285,50 @@ class MailboxWriter:
                 
                 # Import each EML
                 total = len(eml_paths)
+                imported_count = 0
+                
                 for i, eml_path in enumerate(eml_paths):
                     try:
                         self._report_progress(i + 1, total, f"Importing {Path(eml_path).name}")
                         
-                        # Read EML content
-                        with open(eml_path, 'rb') as f:
-                            eml_content = f.read()
+                        abs_path = os.path.abspath(eml_path)
                         
-                        # Create mail item from EML
-                        # We need to save as temp .msg then import, OR use OpenSharedItem
-                        # OpenSharedItem can open EML files directly
-                        mail_item = namespace.OpenSharedItem(os.path.abspath(eml_path))
+                        # OpenSharedItem requires file to have proper extension
+                        # readpst creates numbered files without extension
+                        # So we need to copy to a temp file with .eml extension
+                        temp_eml_path = None
+                        if not abs_path.lower().endswith('.eml'):
+                            import tempfile
+                            import shutil
+                            # Create temp file with .eml extension
+                            fd, temp_eml_path = tempfile.mkstemp(suffix='.eml')
+                            os.close(fd)
+                            shutil.copy2(abs_path, temp_eml_path)
+                            abs_path = temp_eml_path
                         
-                        # Move/copy to target folder
-                        mail_item.Move(target_folder)
-                        
-                        result.emails_written += 1
+                        try:
+                            # OpenSharedItem can open EML files directly
+                            mail_item = namespace.OpenSharedItem(abs_path)
+                            
+                            # Move/copy to target folder
+                            mail_item.Move(target_folder)
+                            
+                            result.emails_written += 1
+                            imported_count += 1
+                            
+                        finally:
+                            # Clean up temp file if we created one
+                            if temp_eml_path and os.path.exists(temp_eml_path):
+                                try:
+                                    os.remove(temp_eml_path)
+                                except:
+                                    pass
                         
                     except Exception as e:
                         result.warnings.append(f"Failed to import {eml_path}: {e}")
                         logger.warning(f"Failed to import {eml_path} to PST: {e}")
+                
+                logger.info(f"Successfully imported {imported_count}/{total} emails to PST")
                 
                 # Remove the PST from Outlook (keeps the file)
                 namespace.RemoveStore(root_folder)
