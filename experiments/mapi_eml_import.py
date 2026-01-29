@@ -395,6 +395,7 @@ class MAPIEmlImporter:
         try:
             # Create message
             msg = folder.CreateMessage(None, 0)
+            print(f"  DEBUG CreateMessage returned: {type(msg)}")
             
             # Convert date to PyTime
             pytime = self.pywintypes.Time(eml_data['date'])
@@ -554,9 +555,9 @@ def main():
         # Create a test EML for demonstration
         input_path = None
     
-    # Output PST
+    # Output PST - use a fresh name to avoid permission issues
     documents = Path(os.environ.get('USERPROFILE', '')) / 'Documents'
-    pst_path = documents / 'MAPI_Import_Test.pst'
+    pst_path = documents / 'MAPI_Import_Test2.pst'  # New name!
     
     print(f"Output PST: {pst_path}")
     
@@ -574,7 +575,7 @@ def main():
         print("✓ PST ready")
         
         print_section("Step 3: Create Import Folder")
-        folder = importer.get_or_create_folder(mapi_store, outlook_store, "EML Imports")
+        folder = importer.get_or_create_folder(mapi_store, outlook_store, "Test Imports")
         print("✓ Folder ready")
         
         print_section("Step 4: Import EMLs")
