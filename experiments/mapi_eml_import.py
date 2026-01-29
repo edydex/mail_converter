@@ -132,7 +132,7 @@ class MAPIEmlImporter:
         """
         pst_path = Path(pst_path).resolve()
         
-        # Check if PST already mounted
+        # Check if PST already mounted via Outlook
         outlook_store = None
         for store in self.namespace.Stores:
             if store.FilePath:
@@ -159,12 +159,39 @@ class MAPIEmlImporter:
         if not outlook_store:
             raise RuntimeError(f"Could not find PST store: {pst_path}")
         
-        # Open via MAPI
-        store_id = bytes.fromhex(outlook_store.StoreID)
-        mapi_store = self.session.OpenMsgStore(
-            0, store_id, None, 
-            self.mapi.MDB_WRITE | self.mapi.MAPI_BEST_ACCESS
-        )
+        # Now open via MAPI using GetMsgStoresTable (same as working script!)
+        PR_ENTRYID = 0x0FFF0102
+        PR_DISPLAY_NAME_W = 0x3001001F
+        PR_MDB_PROVIDER = 0x34140102
+        
+        stores_table = self.session.GetMsgStoresTable(0)
+        stores_table.SetColumns([PR_ENTRYID, PR_DISPLAY_NAME_W], 0)
+        
+        mapi_store = None
+        target_name = outlook_store.DisplayName
+        
+        while True:
+            rows = stores_table.QueryRows(10, 0)
+            if not rows:
+                break
+            for row in rows:
+                store_eid = row[0][1]
+                store_name = row[1][1]
+                print(f"  Found store: {store_name}")
+                
+                if store_name == target_name:
+                    # Open this store with MAPI
+                    mapi_store = self.session.OpenMsgStore(
+                        0, store_eid, None,
+                        self.mapi.MDB_WRITE | self.mapi.MAPI_BEST_ACCESS
+                    )
+                    print(f"✓ Opened store via MAPI: {store_name}")
+                    break
+            if mapi_store:
+                break
+        
+        if not mapi_store:
+            raise RuntimeError(f"Could not open store via MAPI: {target_name}")
         
         return mapi_store, outlook_store
     
