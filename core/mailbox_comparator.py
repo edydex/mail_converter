@@ -312,6 +312,16 @@ class MailboxComparator:
         # Create temp directory for extraction
         import tempfile
         temp_dir = Path(tempfile.mkdtemp(prefix="mailbox_compare_"))
+        logger.info(f"Created temp directory: {temp_dir}")
+        
+        def cleanup_temp():
+            """Clean up temp directory."""
+            try:
+                if temp_dir.exists():
+                    shutil.rmtree(temp_dir, ignore_errors=True)
+                    logger.info(f"Cleaned up temp directory: {temp_dir}")
+            except Exception as e:
+                logger.warning(f"Failed to clean up temp directory {temp_dir}: {e}")
         
         try:
             # Step 1: Extract both mailboxes
@@ -336,6 +346,7 @@ class MailboxComparator:
                     error_msg += f" Warnings: {'; '.join(warnings_a)}"
                 result.errors.append(error_msg)
                 logger.error(error_msg)
+                cleanup_temp()  # Clean up before returning
                 return result
             
             self._report_progress(1, 4, "Step 2/4: Extracting mailbox B...")
@@ -356,6 +367,7 @@ class MailboxComparator:
                     error_msg += f" Warnings: {'; '.join(warnings_b)}"
                 result.errors.append(error_msg)
                 logger.error(error_msg)
+                cleanup_temp()  # Clean up before returning
                 return result
             
             # Step 2: Build fingerprint indexes
@@ -445,10 +457,7 @@ class MailboxComparator:
         
         finally:
             # Cleanup temp directory
-            try:
-                shutil.rmtree(temp_dir, ignore_errors=True)
-            except:
-                pass
+            cleanup_temp()
         
         return result
     

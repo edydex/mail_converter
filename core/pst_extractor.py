@@ -233,10 +233,17 @@ class PSTExtractor:
             # Monitor output for progress
             stdout, stderr = process.communicate()
             
+            # Note: readpst often returns non-zero even on success (warnings count as errors)
+            # We'll check if files were actually extracted before declaring failure
             if process.returncode != 0:
-                errors.append(f"readpst error (code {process.returncode}): {stderr}")
+                # Store as potential error - will be downgraded to warning if files extracted
                 if "unable to open" in stderr.lower():
                     errors.append("Unable to open PST file. It may be corrupted or password protected.")
+                else:
+                    # Just note the return code for now - might be a warning
+                    warnings.append(f"readpst returned code {process.returncode}")
+                    if stderr.strip():
+                        warnings.append(f"readpst stderr: {stderr.strip()}")
             
             # Parse any warnings from stderr
             if stderr:
@@ -280,15 +287,21 @@ class PSTExtractor:
         eml_count = len(email_files)
         
         if eml_count == 0:
-            warnings.append("No EML files were extracted. The PST may be empty or in an unsupported format.")
+            # No files extracted - this is a real error
+            if not errors:  # Add error if we don't have one already
+                errors.append("No emails were extracted. The PST may be empty or in an unsupported format.")
         
         if self.progress_callback:
             self.progress_callback(100, 100, f"Extracted {eml_count} emails")
         
         logger.info(f"Extracted {eml_count} emails to {output_path}")
         
+        # Success is determined by whether we actually extracted files
+        # readpst often returns non-zero codes even when extraction works
+        extraction_success = eml_count > 0 and len(errors) == 0
+        
         return ExtractionResult(
-            success=len(errors) == 0,
+            success=extraction_success,
             eml_count=eml_count,
             output_dir=output_path,
             errors=errors,

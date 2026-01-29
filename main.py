@@ -47,12 +47,43 @@ PROJECT_ROOT = Path(__file__).parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 
+def get_log_directory() -> Path:
+    """Get the appropriate log directory based on execution context."""
+    # For bundled PyInstaller app, use user's documents folder
+    if hasattr(sys, '_MEIPASS'):
+        if sys.platform == 'win32':
+            # Use Documents/MayosMailConverter/logs on Windows
+            docs = Path(os.environ.get('USERPROFILE', '')) / 'Documents'
+            log_dir = docs / 'MayosMailConverter' / 'logs'
+        else:
+            # Use ~/Library/Logs on macOS, ~/.local/share on Linux
+            home = Path.home()
+            if sys.platform == 'darwin':
+                log_dir = home / 'Library' / 'Logs' / 'MayosMailConverter'
+            else:
+                log_dir = home / '.local' / 'share' / 'MayosMailConverter' / 'logs'
+    else:
+        # Development mode - use project directory
+        log_dir = PROJECT_ROOT / "logs"
+    
+    try:
+        log_dir.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        # Fallback to temp directory if we can't create the preferred location
+        import tempfile
+        log_dir = Path(tempfile.gettempdir()) / 'MayosMailConverter' / 'logs'
+        log_dir.mkdir(parents=True, exist_ok=True)
+    
+    return log_dir
+
+
 def setup_logging():
     """Configure application logging."""
-    log_dir = PROJECT_ROOT / "logs"
-    log_dir.mkdir(exist_ok=True)
-    
+    log_dir = get_log_directory()
     log_file = log_dir / "mail_converter.log"
+    
+    # Print log location to console so user knows where to find it
+    print(f"Log file: {log_file}")
     
     logging.basicConfig(
         level=logging.DEBUG,  # Changed to DEBUG for troubleshooting
@@ -62,6 +93,9 @@ def setup_logging():
             logging.StreamHandler(sys.stdout)
         ]
     )
+    
+    # Log the log file location
+    logging.getLogger(__name__).info(f"Log file location: {log_file}")
     
     # Reduce noise from some libraries
     logging.getLogger('PIL').setLevel(logging.WARNING)
