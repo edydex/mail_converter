@@ -13,7 +13,7 @@ from .conversion_pipeline import ConversionPipeline, InputType
 
 # Email Tools
 from .email_fingerprint import EmailFingerprint, FingerprintIndex, create_fingerprint
-from .mailbox_writer import MailboxWriter, OutputFormat
+from .mailbox_writer import MailboxWriter, OutputFormat, is_redemption_available
 from .mailbox_comparator import MailboxComparator, ComparisonConfig, ComparisonResult
 from .mailbox_merger import MailboxMerger, MergeConfig, MergeResult
 from .mailbox_deduplicator import MailboxDeduplicator, DedupeConfig, DedupeResult
@@ -37,6 +37,7 @@ __all__ = [
     'create_fingerprint',
     'MailboxWriter',
     'OutputFormat',
+    'is_redemption_available',
     'MailboxComparator',
     'ComparisonConfig',
     'ComparisonResult',

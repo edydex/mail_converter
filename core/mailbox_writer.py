@@ -56,6 +56,28 @@ def is_pst_write_available() -> bool:
         return False
 
 
+def is_redemption_available() -> bool:
+    """
+    Check if Redemption library is available for full PST write support.
+    
+    Redemption allows setting SentOn/ReceivedTime which standard Outlook COM cannot do.
+    
+    Returns:
+        True if Redemption is available, False otherwise
+    """
+    if sys.platform != 'win32':
+        return False
+    
+    try:
+        import win32com.client
+        # Try to create Redemption session
+        session = win32com.client.Dispatch("Redemption.RDOSession")
+        return True
+    except Exception as e:
+        logger.debug(f"Redemption not available: {e}")
+        return False
+
+
 class MailboxWriter:
     """
     Writes emails to various mailbox formats.
@@ -63,7 +85,7 @@ class MailboxWriter:
     Supports:
     - MBOX: Standard format, works everywhere
     - EML Folder: Individual .eml files in a folder
-    - PST: Windows only, requires Outlook
+    - PST: Windows only, requires Outlook (with Redemption for date preservation)
     """
     
     def __init__(
@@ -78,6 +100,7 @@ class MailboxWriter:
         """
         self.progress_callback = progress_callback
         self._pst_available = None  # Lazy check
+        self._redemption_available = None  # Lazy check
     
     def _report_progress(self, current: int, total: int, message: str):
         """Report progress to callback."""
@@ -90,6 +113,13 @@ class MailboxWriter:
         if self._pst_available is None:
             self._pst_available = is_pst_write_available()
         return self._pst_available
+    
+    @property
+    def redemption_available(self) -> bool:
+        """Check if Redemption library is available for full PST date support."""
+        if self._redemption_available is None:
+            self._redemption_available = is_redemption_available()
+        return self._redemption_available
     
     def get_available_formats(self) -> List[OutputFormat]:
         """Get list of available output formats."""
@@ -229,7 +259,193 @@ class MailboxWriter:
         """
         Write emails to PST format (Windows only).
         
-        Uses Outlook COM automation to create PST and import emails.
+        Uses Redemption if available (preserves dates), 
+        otherwise falls back to Outlook COM (dates may not be preserved).
+        """
+        result = WriteResult(success=False, output_path=output_path)
+        
+        if sys.platform != 'win32':
+            result.errors.append("PST writing is only available on Windows")
+            return result
+        
+        # Try Redemption first (it preserves dates properly)
+        if is_redemption_available():
+            return self._write_pst_redemption(eml_paths, output_path, folder_name)
+        else:
+            logger.info("Redemption not available, using standard Outlook COM (dates may not be preserved)")
+            result.warnings.append(
+                "Redemption library not installed - email dates may show as today's date. "
+                "Install Redemption from dimastr.com/redemption for proper date preservation."
+            )
+            return self._write_pst_outlook(eml_paths, output_path, folder_name)
+    
+    def _write_pst_redemption(
+        self, 
+        eml_paths: List[str], 
+        output_path: str,
+        folder_name: str = "Emails"
+    ) -> WriteResult:
+        """
+        Write emails to PST using Redemption library.
+        
+        Redemption allows setting SentOn and ReceivedTime properly,
+        which is not possible with standard Outlook COM.
+        """
+        result = WriteResult(success=False, output_path=output_path)
+        
+        try:
+            import win32com.client
+            import pythoncom
+            from email import message_from_bytes, policy as email_policy
+            from email.utils import parsedate_to_datetime
+            
+            # Initialize COM
+            pythoncom.CoInitialize()
+            
+            try:
+                # Create Redemption session
+                session = win32com.client.Dispatch("Redemption.RDOSession")
+                
+                # Connect to Outlook's MAPI session
+                outlook = win32com.client.Dispatch("Outlook.Application")
+                session.MAPIOBJECT = outlook.Session.MAPIOBJECT
+                
+                # Create new PST file
+                pst_path = os.path.abspath(output_path)
+                
+                # Ensure directory exists
+                Path(pst_path).parent.mkdir(parents=True, exist_ok=True)
+                
+                # Remove existing file if present
+                if os.path.exists(pst_path):
+                    os.remove(pst_path)
+                
+                # Create PST store
+                pst_store = session.Stores.AddPSTStore(pst_path)
+                
+                # Get root folder and create target folder
+                root_folder = pst_store.RootFolder
+                
+                try:
+                    target_folder = root_folder.Folders.Add(folder_name)
+                except:
+                    # Folder might already exist
+                    try:
+                        target_folder = root_folder.Folders(folder_name)
+                    except:
+                        target_folder = root_folder
+                
+                # Import each email
+                total = len(eml_paths)
+                imported_count = 0
+                
+                for i, eml_path in enumerate(eml_paths):
+                    try:
+                        self._report_progress(i + 1, total, f"Importing {i+1}/{total}")
+                        
+                        # Parse the email file with Python's email module
+                        with open(eml_path, 'rb') as f:
+                            msg = message_from_bytes(f.read(), policy=email_policy.default)
+                        
+                        # Create new message in "sent" state
+                        # CRITICAL: Set Sent=True BEFORE first save to allow date setting
+                        mail_item = target_folder.Items.Add("IPM.Note")
+                        mail_item.Sent = True
+                        
+                        # Set subject
+                        mail_item.Subject = msg.get('Subject', '(No Subject)') or '(No Subject)'
+                        
+                        # Set sender
+                        sender = msg.get('From', '')
+                        if sender:
+                            try:
+                                mail_item.SentOnBehalfOfName = sender
+                            except:
+                                pass
+                        
+                        # Set recipients
+                        to_addrs = msg.get('To', '')
+                        cc_addrs = msg.get('Cc', '')
+                        
+                        if to_addrs:
+                            try:
+                                mail_item.To = to_addrs
+                            except:
+                                pass
+                        if cc_addrs:
+                            try:
+                                mail_item.CC = cc_addrs
+                            except:
+                                pass
+                        
+                        # Set body
+                        body = msg.get_body(preferencelist=('html', 'plain'))
+                        if body:
+                            try:
+                                content = body.get_content()
+                                if body.get_content_type() == 'text/html':
+                                    mail_item.HTMLBody = content
+                                else:
+                                    mail_item.Body = content
+                            except Exception as e:
+                                logger.debug(f"Could not set body: {e}")
+                        
+                        # SET DATES - This is why we use Redemption!
+                        date_str = msg.get('Date', '')
+                        if date_str:
+                            try:
+                                dt = parsedate_to_datetime(date_str)
+                                mail_item.SentOn = dt
+                                mail_item.ReceivedTime = dt
+                            except Exception as e:
+                                logger.debug(f"Could not set date: {e}")
+                        
+                        # Save the message
+                        mail_item.Save()
+                        
+                        result.emails_written += 1
+                        imported_count += 1
+                        
+                    except Exception as e:
+                        if len(result.warnings) < 10:
+                            result.warnings.append(f"Failed to import email {i+1}: {str(e)[:100]}")
+                        logger.warning(f"Failed to import {eml_path} to PST: {e}")
+                
+                logger.info(f"Successfully imported {imported_count}/{total} emails to PST using Redemption")
+                
+                if imported_count == 0 and total > 0:
+                    result.errors.append(
+                        f"Failed to import any emails. Try using MBOX or EML Folder output format instead."
+                    )
+                
+                # Detach the PST store (keeps the file)
+                try:
+                    session.Stores.RemoveStore(pst_store)
+                except:
+                    pass
+                
+                result.success = imported_count > 0
+                
+            finally:
+                pythoncom.CoUninitialize()
+        
+        except Exception as e:
+            result.errors.append(f"PST write with Redemption failed: {e}")
+            logger.error(f"PST write with Redemption failed: {e}")
+        
+        return result
+    
+    def _write_pst_outlook(
+        self, 
+        eml_paths: List[str], 
+        output_path: str,
+        folder_name: str = "Emails"
+    ) -> WriteResult:
+        """
+        Write emails to PST using standard Outlook COM.
+        
+        Note: This method cannot preserve original sent/received dates.
+        Dates will show as the import time.
         """
         result = WriteResult(success=False, output_path=output_path)
         
@@ -240,6 +456,8 @@ class MailboxWriter:
         try:
             import win32com.client
             import pythoncom
+            from email import message_from_bytes, policy as email_policy
+            from email.utils import parsedate_to_datetime
             
             # Initialize COM
             pythoncom.CoInitialize()
@@ -249,7 +467,6 @@ class MailboxWriter:
                 namespace = outlook.GetNamespace("MAPI")
                 
                 # Create new PST file
-                # Outlook will create the file when we add the store
                 pst_path = os.path.abspath(output_path)
                 
                 # Ensure directory exists
@@ -273,67 +490,95 @@ class MailboxWriter:
                     result.errors.append("Failed to create PST store")
                     return result
                 
-                # Get or create the target folder
+                # Get root folder
                 root_folder = pst_store.GetRootFolder()
                 
                 # Create subfolder for emails
                 try:
                     target_folder = root_folder.Folders.Add(folder_name)
                 except:
-                    # Folder might already exist
                     target_folder = root_folder.Folders[folder_name]
                 
-                # Import each EML
+                # Import each email
                 total = len(eml_paths)
                 imported_count = 0
                 
                 for i, eml_path in enumerate(eml_paths):
                     try:
-                        self._report_progress(i + 1, total, f"Importing {Path(eml_path).name}")
+                        self._report_progress(i + 1, total, f"Importing {i+1}/{total}")
                         
-                        abs_path = os.path.abspath(eml_path)
+                        # Parse the email file with Python's email module
+                        with open(eml_path, 'rb') as f:
+                            msg = message_from_bytes(f.read(), policy=email_policy.default)
                         
-                        # OpenSharedItem requires file to have proper extension
-                        # readpst creates numbered files without extension
-                        # So we need to copy to a temp file with .eml extension
-                        temp_eml_path = None
-                        if not abs_path.lower().endswith('.eml'):
-                            import tempfile
-                            import shutil
-                            # Create temp file with .eml extension
-                            fd, temp_eml_path = tempfile.mkstemp(suffix='.eml')
-                            os.close(fd)
-                            shutil.copy2(abs_path, temp_eml_path)
-                            abs_path = temp_eml_path
+                        # Create new MailItem in Outlook
+                        mail_item = outlook.CreateItem(0)  # 0 = olMailItem
                         
-                        try:
-                            # OpenSharedItem can open EML files directly
-                            mail_item = namespace.OpenSharedItem(abs_path)
-                            
-                            # Move/copy to target folder
-                            mail_item.Move(target_folder)
-                            
-                            result.emails_written += 1
-                            imported_count += 1
-                            
-                        finally:
-                            # Clean up temp file if we created one
-                            if temp_eml_path and os.path.exists(temp_eml_path):
-                                try:
-                                    os.remove(temp_eml_path)
-                                except:
-                                    pass
+                        # Set basic properties
+                        mail_item.Subject = msg.get('Subject', '(No Subject)') or '(No Subject)'
+                        
+                        # Set sender (display only - can't set actual sender on sent items)
+                        sender = msg.get('From', '')
+                        if sender:
+                            mail_item.SentOnBehalfOfName = sender
+                        
+                        # Set recipients (To, CC, BCC)
+                        to_addrs = msg.get('To', '')
+                        cc_addrs = msg.get('Cc', '')
+                        bcc_addrs = msg.get('Bcc', '')
+                        
+                        if to_addrs:
+                            mail_item.To = to_addrs
+                        if cc_addrs:
+                            mail_item.CC = cc_addrs
+                        if bcc_addrs:
+                            mail_item.BCC = bcc_addrs
+                        
+                        # Set body
+                        body = msg.get_body(preferencelist=('html', 'plain'))
+                        if body:
+                            content = body.get_content()
+                            if body.get_content_type() == 'text/html':
+                                mail_item.HTMLBody = content
+                            else:
+                                mail_item.Body = content
+                        
+                        # Set date
+                        date_str = msg.get('Date', '')
+                        if date_str:
+                            try:
+                                dt = parsedate_to_datetime(date_str)
+                                # Note: SentOn is read-only, but we can set it via PropertyAccessor
+                                # For now, the email will have current date - this is a limitation
+                            except:
+                                pass
+                        
+                        # Save and move to target folder
+                        mail_item.Save()
+                        mail_item.Move(target_folder)
+                        
+                        result.emails_written += 1
+                        imported_count += 1
                         
                     except Exception as e:
-                        result.warnings.append(f"Failed to import {eml_path}: {e}")
+                        error_msg = str(e)
+                        # Only log first few errors to avoid spam
+                        if len(result.warnings) < 10:
+                            result.warnings.append(f"Failed to import email {i+1}: {error_msg[:100]}")
                         logger.warning(f"Failed to import {eml_path} to PST: {e}")
                 
                 logger.info(f"Successfully imported {imported_count}/{total} emails to PST")
                 
+                if imported_count == 0 and total > 0:
+                    result.errors.append(
+                        f"Failed to import any emails. Try using MBOX or EML Folder output format instead."
+                    )
+                
                 # Remove the PST from Outlook (keeps the file)
                 namespace.RemoveStore(root_folder)
                 
-                result.success = True
+                # Consider success if we imported at least some emails
+                result.success = imported_count > 0
                 
             finally:
                 pythoncom.CoUninitialize()

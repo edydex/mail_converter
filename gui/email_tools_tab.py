@@ -226,7 +226,10 @@ class EmailToolsTab:
                 # Update UI in main thread
                 self.parent.after(0, lambda: self._compare_complete(result))
             except Exception as e:
-                self.parent.after(0, lambda: self._operation_error(str(e)))
+                import traceback
+                error_detail = traceback.format_exc()
+                logger.error(f"Comparison thread error: {error_detail}")
+                self.parent.after(0, lambda: self._operation_error(f"{str(e)}\n\nSee log for details."))
         
         self.operation_thread = threading.Thread(target=run, daemon=True)
         self.operation_thread.start()
@@ -234,6 +237,15 @@ class EmailToolsTab:
     def _compare_complete(self, result: ComparisonResult):
         """Handle comparison completion."""
         self.compare_btn.config(state=tk.NORMAL)
+        
+        # Build message with warnings if any
+        warnings_text = ""
+        if result.warnings:
+            warnings_text = f"\n\nWarnings ({len(result.warnings)}):\n"
+            for w in result.warnings[:5]:
+                warnings_text += f"• {w[:80]}...\n" if len(w) > 80 else f"• {w}\n"
+            if len(result.warnings) > 5:
+                warnings_text += f"...and {len(result.warnings) - 5} more"
         
         if result.success:
             msg = (
@@ -252,11 +264,17 @@ class EmailToolsTab:
                 f"Unique to A: {result.unique_to_a_count}\n"
                 f"Unique to B: {result.unique_to_b_count}\n\n"
                 f"Output saved to: {self.compare_output_entry.get()}"
+                f"{warnings_text}"
             )
         else:
+            error_msg = ', '.join(result.errors) if result.errors else "Unknown error"
             self.compare_result_label.config(
-                text=f"✗ Failed: {', '.join(result.errors)}", 
+                text=f"✗ Failed: {error_msg[:100]}", 
                 foreground="red"
+            )
+            messagebox.showerror(
+                "Comparison Failed",
+                f"Errors:\n{error_msg}{warnings_text}"
             )
     
     # =========================================================================

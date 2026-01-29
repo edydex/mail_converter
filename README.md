@@ -151,3 +151,106 @@ mail_converter/
     └── icon.ico               # Windows icon
 ```
 
+---
+
+## PST Writing Limitation & Future Work
+
+### The Problem
+
+The Email Tools feature can compare, merge, deduplicate, and filter mailboxes. However, **writing to PST format with preserved sent/received dates** is not currently possible in an open-source way.
+
+Microsoft's PST format is proprietary. While reading PST files is well-supported (via `libpst`/`readpst`), **writing** PST files with correct dates requires using Microsoft's Extended MAPI API at a low level.
+
+| Output Format | Dates Preserved | Platform |
+|---------------|-----------------|----------|
+| **EML Folder** | ✅ Yes | All |
+| **MBOX** | ✅ Yes | All |
+| **PST** | ❌ No (shows import date) | Windows only |
+
+**Current recommendation:** Use EML Folder or MBOX output. These formats preserve all email data including dates perfectly.
+
+---
+
+### For Closed-Source / Commercial Projects: Redemption Library
+
+If you're building a **closed-source commercial product**, the [Redemption library](https://www.dimastr.com/redemption/) ($299.99 one-time) solves this:
+
+- Provides Extended MAPI access via COM
+- Allows setting `SentOn` and `ReceivedTime` on messages
+- Works with Python via `win32com.client`
+- **License**: One-time purchase, royalty-free distribution, unlimited end users
+
+**Note:** Redemption's distributable license explicitly **cannot be used in open-source projects**.
+
+The code in `mailbox_writer.py` already detects Redemption if installed and uses it automatically.
+
+---
+
+### For Open-Source: What Would Need To Be Built
+
+To create an open-source solution for PST writing with date preservation, someone would need to build a Python extension that wraps Extended MAPI directly. Here's what's involved:
+
+#### Required MAPI Interfaces to Wrap
+
+```c
+// Session management
+MAPIInitialize()
+MAPILogonEx()          // Returns IMAPISession
+
+// Store access
+IMAPISession::OpenMsgStore()   // Returns IMsgStore
+IMsgStore::OpenEntry()         // Returns IMAPIFolder
+
+// Message creation
+IMAPIFolder::CreateMessage()   // Returns IMessage
+
+// Property setting (THE KEY PART)
+IMessage::SetProps()           // Set PR_MESSAGE_DELIVERY_TIME, PR_CLIENT_SUBMIT_TIME
+IMessage::SaveChanges()        // Must set props BEFORE first save!
+```
+
+#### Key MAPI Properties for Dates
+
+| Property | Tag | Description |
+|----------|-----|-------------|
+| `PR_MESSAGE_DELIVERY_TIME` | `0x0E060040` | ReceivedTime |
+| `PR_CLIENT_SUBMIT_TIME` | `0x00390040` | SentOn |
+| `PR_MESSAGE_FLAGS` | `0x0E070003` | Must clear `MSGFLAG_UNSENT` |
+
+#### Technical Challenges
+
+1. **COM Interface Binding**: MAPI uses `IUnknown`-based COM, not `IDispatch` (automation). Can't use `win32com.client` directly.
+
+2. **Structure Marshaling**: Need to handle `SPropValue`, `ENTRYID`, `SRowSet`, `FILETIME` structures.
+
+3. **Bitness Matching**: Must match Outlook's bitness (32 or 64-bit).
+
+4. **Session Management**: MAPI sessions are tricky - initialization, profile selection, cleanup.
+
+5. **PyWin32's MAPI Module**: `win32com.mapi` exists but is incomplete. Doesn't expose `SetProps()` on messages.
+
+#### Estimated Effort
+
+- **6-12 months** for a working implementation
+- Requires C/C++ and Python extension development experience
+- Deep knowledge of Windows COM and MAPI internals
+- Ongoing maintenance as Outlook versions change
+
+#### Reference Resources
+
+- **MFCMAPI**: Microsoft's official MAPI sample app - [github.com/microsoft/mfcmapi](https://github.com/microsoft/mfcmapi)
+- **libpff**: Open-source PST reader (read-only) - [github.com/libyal/libpff](https://github.com/libyal/libpff)
+- **MSDN MAPI Reference**: [docs.microsoft.com/en-us/office/client-developer/outlook/mapi](https://docs.microsoft.com/en-us/office/client-developer/outlook/mapi/)
+
+#### Contribution Welcome
+
+If you have Extended MAPI experience and want to tackle this, contributions are very welcome! The goal would be a minimal Python extension (`mapi_writer.pyd`) that exposes just enough to:
+
+1. Open/create a PST store
+2. Create a message in a folder
+3. Set date properties before first save
+4. Save the message
+
+Even a proof-of-concept would be valuable.
+
+
