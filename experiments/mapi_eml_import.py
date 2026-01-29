@@ -176,14 +176,35 @@ class MAPIEmlImporter:
         PR_IPM_SUBTREE_ENTRYID = 0x35E00102
         result = mapi_store.GetProps([PR_IPM_SUBTREE_ENTRYID], 0)
         
+        print(f"  DEBUG GetProps result type: {type(result)}")
+        print(f"  DEBUG GetProps result: {result}")
+        
         # Parse result - handle different formats
-        if isinstance(result, list) and len(result) > 0:
+        root_eid = None
+        if isinstance(result, tuple) and len(result) > 0:
+            # Format: ((tag, value), (tag, value), ...)
+            for item in result:
+                if isinstance(item, tuple) and len(item) >= 2:
+                    tag, value = item[0], item[1]
+                    if tag == PR_IPM_SUBTREE_ENTRYID:
+                        root_eid = value
+                        break
+                    elif isinstance(value, bytes):
+                        root_eid = value
+                        break
+        elif isinstance(result, list) and len(result) > 0:
             if isinstance(result[0], tuple):
                 root_eid = result[0][1]
             else:
                 root_eid = result[0]
-        else:
-            raise RuntimeError("Could not get IPM Subtree entry ID")
+        
+        if not root_eid or not isinstance(root_eid, bytes):
+            # Fallback: use Outlook's root folder entry ID
+            print("  Falling back to Outlook root folder...")
+            root_outlook = outlook_store.GetRootFolder()
+            root_eid = bytes.fromhex(root_outlook.EntryID)
+        
+        print(f"  DEBUG root_eid type: {type(root_eid)}, len: {len(root_eid) if root_eid else 0}")
         
         # Open root folder with full access
         root_folder = mapi_store.OpenEntry(
@@ -199,13 +220,25 @@ class MAPIEmlImporter:
             
             # Get its entry ID
             folder_props = new_folder.GetProps([PR_ENTRYID], 0)
-            if isinstance(folder_props, list) and len(folder_props) > 0:
+            print(f"  DEBUG folder_props: {folder_props}")
+            
+            folder_eid = None
+            if isinstance(folder_props, tuple):
+                for item in folder_props:
+                    if isinstance(item, tuple) and len(item) >= 2:
+                        if isinstance(item[1], bytes):
+                            folder_eid = item[1]
+                            break
+            elif isinstance(folder_props, list) and len(folder_props) > 0:
                 if isinstance(folder_props[0], tuple):
                     folder_eid = folder_props[0][1]
                 else:
                     folder_eid = folder_props[0]
-            else:
-                raise RuntimeError("Could not get new folder entry ID")
+            
+            if not folder_eid:
+                # Use the folder directly without re-opening
+                print("✓ Using folder directly (couldn't get entry ID)")
+                return new_folder
                 
         except Exception as e:
             if "MAPI_E_COLLISION" in str(e) or "already exists" in str(e).lower():
