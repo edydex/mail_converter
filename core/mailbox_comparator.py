@@ -137,11 +137,15 @@ class MailboxComparator:
         warnings = []
         
         self._report_progress(0, 1, f"Extracting mailbox {label}...")
+        logger.info(f"Extracting mailbox {label} from: {input_path}")
+        logger.info(f"Input type detected: {input_type}")
         
         if input_type == "pst":
             # Extract PST
             output_dir = temp_dir / f"extracted_{label}"
             output_dir.mkdir(parents=True, exist_ok=True)
+            
+            logger.info(f"Extracting PST to: {output_dir}")
             
             result = self.pst_extractor.extract(
                 input_path,
@@ -150,18 +154,23 @@ class MailboxComparator:
             )
             
             if not result.success:
+                logger.error(f"PST extraction failed: {result.errors}")
                 warnings.extend(result.errors)
                 return [], warnings
             
             warnings.extend(result.warnings)
             
-            # Collect all EML files
-            eml_paths = [str(p) for p in output_dir.rglob("*.eml")]
+            # Collect all email files - readpst creates numbered files WITHOUT .eml extension
+            # Look for both numbered files (1, 2, 3...) and .eml files
+            eml_paths = self._collect_email_files(output_dir)
+            logger.info(f"Found {len(eml_paths)} email files in extracted PST")
             
         elif input_type == "mbox":
             # Extract MBOX
             output_dir = temp_dir / f"extracted_{label}"
             output_dir.mkdir(parents=True, exist_ok=True)
+            
+            logger.info(f"Extracting MBOX to: {output_dir}")
             
             result = self.mbox_extractor.extract(
                 input_path,
@@ -170,19 +179,63 @@ class MailboxComparator:
             )
             
             if not result.success:
+                logger.error(f"MBOX extraction failed: {result.errors}")
                 warnings.extend(result.errors)
                 return [], warnings
             
             warnings.extend(result.warnings)
             eml_paths = result.extracted_files
+            logger.info(f"MBOX extraction returned {len(eml_paths)} files")
             
         elif input_type == "eml_folder":
-            # EML folder - just list files
+            # EML folder - collect all email files
             input_dir = Path(input_path)
-            eml_paths = [str(p) for p in input_dir.rglob("*.eml")]
+            eml_paths = self._collect_email_files(input_dir)
+            logger.info(f"Found {len(eml_paths)} email files in folder")
         
         logger.info(f"Extracted {len(eml_paths)} emails from {label}")
+        if len(eml_paths) > 0:
+            logger.debug(f"Sample paths: {eml_paths[:3]}")
+        
         return eml_paths, warnings
+    
+    def _collect_email_files(self, directory: Path) -> List[str]:
+        """
+        Collect all email files from a directory.
+        
+        readpst creates numbered files (1, 2, 3...) without extensions.
+        Also handles standard .eml files.
+        
+        Args:
+            directory: Directory to search
+            
+        Returns:
+            List of email file paths
+        """
+        email_files = []
+        
+        logger.debug(f"Scanning directory: {directory}")
+        
+        for item in directory.rglob('*'):
+            if item.is_file():
+                # Check if it's a numbered file (readpst output) or .eml file
+                if item.name.isdigit() or item.suffix.lower() == '.eml':
+                    email_files.append(str(item))
+                # Also check for common email file patterns
+                elif item.suffix.lower() in ['.msg', '.email']:
+                    email_files.append(str(item))
+        
+        # Log what we found
+        if email_files:
+            logger.debug(f"Found {len(email_files)} email files")
+        else:
+            # Log directory contents for debugging
+            all_files = list(directory.rglob('*'))
+            logger.warning(f"No email files found! Directory contains {len(all_files)} items:")
+            for f in all_files[:20]:  # Show first 20
+                logger.warning(f"  - {f} (is_file={f.is_file()}, name={f.name})")
+        
+        return email_files
     
     def _build_fingerprint_index(
         self,
@@ -263,6 +316,8 @@ class MailboxComparator:
         try:
             # Step 1: Extract both mailboxes
             self._report_progress(0, 4, "Step 1/4: Extracting mailbox A...")
+            logger.info(f"Starting comparison: A={mailbox_a_path}, B={mailbox_b_path}")
+            
             eml_paths_a, warnings_a = self._extract_to_temp(
                 mailbox_a_path, temp_dir, "A"
             )
@@ -270,7 +325,17 @@ class MailboxComparator:
             result.total_in_a = len(eml_paths_a)
             
             if not eml_paths_a:
-                result.errors.append("No emails found in mailbox A")
+                # More detailed error message
+                input_type = self._detect_input_type(mailbox_a_path)
+                error_msg = (
+                    f"No emails found in mailbox A ({input_type}). "
+                    f"Path: {mailbox_a_path}. "
+                    f"Check logs/mail_converter.log for details."
+                )
+                if warnings_a:
+                    error_msg += f" Warnings: {'; '.join(warnings_a)}"
+                result.errors.append(error_msg)
+                logger.error(error_msg)
                 return result
             
             self._report_progress(1, 4, "Step 2/4: Extracting mailbox B...")
@@ -281,7 +346,16 @@ class MailboxComparator:
             result.total_in_b = len(eml_paths_b)
             
             if not eml_paths_b:
-                result.errors.append("No emails found in mailbox B")
+                input_type = self._detect_input_type(mailbox_b_path)
+                error_msg = (
+                    f"No emails found in mailbox B ({input_type}). "
+                    f"Path: {mailbox_b_path}. "
+                    f"Check logs/mail_converter.log for details."
+                )
+                if warnings_b:
+                    error_msg += f" Warnings: {'; '.join(warnings_b)}"
+                result.errors.append(error_msg)
+                logger.error(error_msg)
                 return result
             
             # Step 2: Build fingerprint indexes

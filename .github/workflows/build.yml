@@ -271,14 +271,29 @@ jobs:
         retention-days: 30
         compression-level: 6
 
+    - name: Calculate Version
+      id: version
+      run: |
+        # Base version - increment MINOR when adding features, MAJOR for breaking changes
+        $MAJOR = 1
+        $MINOR = 3
+        # Patch is calculated from run number minus offset (so it starts fresh)
+        # Current run_number is around 22-23, so offset of 22 makes next build v1.3.1
+        $RUN_OFFSET = 22
+        $PATCH = ${{ github.run_number }} - $RUN_OFFSET
+        if ($PATCH -lt 0) { $PATCH = 0 }
+        $VERSION = "$MAJOR.$MINOR.$PATCH"
+        echo "VERSION=$VERSION" >> $env:GITHUB_OUTPUT
+        echo "Calculated version: v$VERSION"
+
     - name: Create Release (on main branch)
       if: github.ref == 'refs/heads/main' && github.event_name == 'push'
       uses: softprops/action-gh-release@v2
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       with:
-        tag_name: "v1.3.${{ github.run_number }}"
-        name: "Mayo's Mail Converter v1.3.${{ github.run_number }}"
+        tag_name: "v${{ steps.version.outputs.VERSION }}"
+        name: "Mayo's Mail Converter v${{ steps.version.outputs.VERSION }}"
         body: |
           ## Mayo's Mail Converter - Windows Executable
           
@@ -334,7 +349,7 @@ jobs:
           echo "Output: MayosMailConverter.exe ($exeSizeMB MB)"
           echo "Artifact: MayosMailConverter-Windows-EXE"
           if ("${{ github.ref }}" -eq "refs/heads/main") {
-            echo "Release: v1.0.${{ github.run_number }}"
+            echo "Release: v${{ steps.version.outputs.VERSION }}"
           }
         } else {
           echo "Status: FAILED"

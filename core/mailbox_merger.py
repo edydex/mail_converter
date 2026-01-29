@@ -101,6 +101,20 @@ class MailboxMerger:
         else:
             return "eml_folder"
     
+    def _collect_email_files(self, directory: Path) -> List[str]:
+        """
+        Collect all email files from a directory.
+        
+        readpst creates numbered files (1, 2, 3...) without extensions.
+        Also handles standard .eml files.
+        """
+        email_files = []
+        for item in directory.rglob('*'):
+            if item.is_file():
+                if item.name.isdigit() or item.suffix.lower() in ['.eml', '.msg', '.email']:
+                    email_files.append(str(item))
+        return email_files
+    
     def _extract_mailbox(
         self,
         input_path: str,
@@ -127,7 +141,8 @@ class MailboxMerger:
                 preserve_structure=False
             )
             if result.success:
-                eml_paths = [str(p) for p in output_subdir.rglob("*.eml")]
+                # readpst creates numbered files without .eml extension
+                eml_paths = self._collect_email_files(output_subdir)
             warnings.extend(result.errors + result.warnings)
             
         elif input_type == "mbox":
@@ -142,7 +157,7 @@ class MailboxMerger:
             
         elif input_type == "eml_folder":
             input_dir = Path(input_path)
-            eml_paths = [str(p) for p in input_dir.rglob("*.eml")]
+            eml_paths = self._collect_email_files(input_dir)
             
         elif input_type == "eml_file":
             # Single EML file

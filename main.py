@@ -55,7 +55,7 @@ def setup_logging():
     log_file = log_dir / "mail_converter.log"
     
     logging.basicConfig(
-        level=logging.INFO,
+        level=logging.DEBUG,  # Changed to DEBUG for troubleshooting
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
         handlers=[
             logging.FileHandler(log_file),
@@ -66,6 +66,8 @@ def setup_logging():
     # Reduce noise from some libraries
     logging.getLogger('PIL').setLevel(logging.WARNING)
     logging.getLogger('pdfminer').setLevel(logging.WARNING)
+    logging.getLogger('fontTools').setLevel(logging.WARNING)
+    logging.getLogger('weasyprint').setLevel(logging.WARNING)
 
 
 def check_dependencies():
