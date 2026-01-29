@@ -16,8 +16,8 @@ Run with Outlook OPEN:
     python experiments/mapi_eml_import.py <path_to_eml_file_or_folder>
 
 Example:
-    python experiments/mapi_eml_import.py "C:\path\to\emails"
-    python experiments/mapi_eml_import.py "C:\path\to\email.eml"
+    python experiments/mapi_eml_import.py "C:/path/to/emails"
+    python experiments/mapi_eml_import.py "C:/path/to/email.eml"
 """
 
 import sys
@@ -170,6 +170,8 @@ class MAPIEmlImporter:
     
     def get_or_create_folder(self, mapi_store, outlook_store, folder_name: str):
         """Get or create a folder in the PST."""
+        import time
+        
         # Get root folder via Outlook
         root_outlook = outlook_store.GetRootFolder()
         root_eid = bytes.fromhex(root_outlook.EntryID)
@@ -180,25 +182,42 @@ class MAPIEmlImporter:
             self.mapi.MAPI_MODIFY | self.mapi.MAPI_BEST_ACCESS
         )
         
-        # Try to create folder
+        # Check if folder already exists
+        for outlook_folder in root_outlook.Folders:
+            if outlook_folder.Name == folder_name:
+                folder_eid = bytes.fromhex(outlook_folder.EntryID)
+                folder = mapi_store.OpenEntry(
+                    folder_eid, None,
+                    self.mapi.MAPI_MODIFY | self.mapi.MAPI_BEST_ACCESS
+                )
+                print(f"✓ Opened existing folder: {folder_name}")
+                return folder
+        
+        # Create new folder
         try:
-            folder = root_folder.CreateFolder(1, folder_name, "", None, 0)
+            root_folder.CreateFolder(1, folder_name, "", None, 0)
             print(f"✓ Created folder: {folder_name}")
-            return folder
         except Exception as e:
-            # Folder might exist, find it
-            if "MAPI_E_COLLISION" in str(e) or "already exists" in str(e).lower():
-                # Find existing folder
-                for outlook_folder in root_outlook.Folders:
-                    if outlook_folder.Name == folder_name:
-                        folder_eid = bytes.fromhex(outlook_folder.EntryID)
-                        folder = mapi_store.OpenEntry(
-                            folder_eid, None,
-                            self.mapi.MAPI_MODIFY | self.mapi.MAPI_BEST_ACCESS
-                        )
-                        print(f"✓ Opened existing folder: {folder_name}")
-                        return folder
-            raise
+            if "MAPI_E_COLLISION" not in str(e) and "already exists" not in str(e).lower():
+                raise
+        
+        # Give Outlook a moment to sync
+        time.sleep(0.3)
+        
+        # Re-fetch from Outlook and open with write access
+        # Need to refresh the folder list
+        root_outlook = outlook_store.GetRootFolder()
+        for outlook_folder in root_outlook.Folders:
+            if outlook_folder.Name == folder_name:
+                folder_eid = bytes.fromhex(outlook_folder.EntryID)
+                folder = mapi_store.OpenEntry(
+                    folder_eid, None,
+                    self.mapi.MAPI_MODIFY | self.mapi.MAPI_BEST_ACCESS
+                )
+                print(f"✓ Opened folder with write access")
+                return folder
+        
+        raise RuntimeError(f"Could not find created folder: {folder_name}")
     
     def parse_eml(self, eml_path: str) -> dict:
         """Parse an EML file and extract all components."""
