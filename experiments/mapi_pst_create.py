@@ -165,16 +165,30 @@ def main():
         # Get the IPM subtree (where mail folders live)
         PR_IPM_SUBTREE_ENTRYID = 0x35E00102
         
-        props = mapi_store.GetProps([PR_IPM_SUBTREE_ENTRYID], 0)
-        if props and props[0][0] == PR_IPM_SUBTREE_ENTRYID:
-            ipm_subtree_eid = props[0][1]
-            print(f"✓ Got IPM Subtree entry ID ({len(ipm_subtree_eid)} bytes)")
-        else:
-            print("⚠ Could not get IPM Subtree, using root")
-            # Fallback: get root folder
-            PR_ENTRYID = mapitags.PR_ENTRYID
-            props = mapi_store.GetProps([PR_ENTRYID], 0)
-            ipm_subtree_eid = props[0][1]
+        try:
+            props = mapi_store.GetProps([PR_IPM_SUBTREE_ENTRYID], 0)
+            print(f"GetProps returned: {type(props)}, {props}")
+            
+            # GetProps returns list of (tag, value) or just values depending on pywin32 version
+            if props:
+                if isinstance(props[0], tuple):
+                    # Format: [(tag, value), ...]
+                    ipm_subtree_eid = props[0][1]
+                else:
+                    # Format: [value, ...] or could be error code
+                    if isinstance(props[0], bytes):
+                        ipm_subtree_eid = props[0]
+                    else:
+                        raise ValueError(f"Unexpected props format: {props}")
+                print(f"✓ Got IPM Subtree entry ID ({len(ipm_subtree_eid)} bytes)")
+        except Exception as e:
+            print(f"⚠ Could not get IPM Subtree ({e}), trying alternative...")
+            
+            # Alternative: Use Outlook to get the root folder entry ID
+            root_outlook = pst_store.GetRootFolder()
+            root_eid_hex = root_outlook.EntryID
+            ipm_subtree_eid = bytes.fromhex(root_eid_hex)
+            print(f"✓ Got root folder via Outlook ({len(ipm_subtree_eid)} bytes)")
         
         # Open the IPM subtree folder
         root_folder = mapi_store.OpenEntry(ipm_subtree_eid, None, mapi.MAPI_MODIFY | mapi.MAPI_BEST_ACCESS)
