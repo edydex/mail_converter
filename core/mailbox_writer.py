@@ -184,13 +184,19 @@ class MailboxWriter:
                     try:
                         self._report_progress(i + 1, total, f"Writing {Path(eml_path).name}")
                         
-                        # Read EML file
+                        # Read EML file as raw bytes and use compat32 policy
+                        # to avoid MIME structure changes that confuse Outlook
                         with open(eml_path, 'rb') as f:
                             eml_content = f.read()
                         
-                        # Parse and add to mbox
+                        # Use compat32 policy for maximum compatibility with email clients
                         from email import message_from_bytes
-                        msg = message_from_bytes(eml_content, policy=policy.default)
+                        from email.policy import compat32
+                        msg = message_from_bytes(eml_content, policy=compat32)
+                        
+                        # Fix common MIME issues that cause "body" attachment problem
+                        msg = self._fix_mime_structure(msg)
+                        
                         mbox.add(msg)
                         result.emails_written += 1
                         
@@ -208,6 +214,52 @@ class MailboxWriter:
         except Exception as e:
             result.errors.append(f"MBOX write failed: {e}")
             logger.error(f"MBOX write failed: {e}")
+        
+        return result
+    
+    def _fix_mime_structure(self, msg):
+        """
+        Fix MIME structure issues that cause body to appear as attachment.
+        
+        Common issues from readpst output:
+        1. Body parts with Content-Disposition: attachment instead of inline
+        2. Missing Content-Type on text parts
+        3. Filename on body parts that shouldn't have one
+        """
+        if msg.is_multipart():
+            # Check each part
+            for part in msg.walk():
+                content_type = part.get_content_type()
+                disposition = part.get('Content-Disposition', '')
+                
+                # If it's a text/plain or text/html part that's marked as attachment
+                # with a generic name like "body" or no name, fix it
+                if content_type in ('text/plain', 'text/html'):
+                    filename = part.get_filename()
+                    
+                    # Check if this looks like a body that got marked as attachment
+                    if filename and filename.lower() in ('body', 'body.txt', 'body.html', 'body.htm'):
+                        # Remove Content-Disposition to make it inline
+                        if 'Content-Disposition' in part:
+                            del part['Content-Disposition']
+                        # Also remove the filename param if present
+                        
+                    elif 'attachment' in disposition.lower() and not filename:
+                        # Body text marked as attachment with no filename - fix it
+                        if 'Content-Disposition' in part:
+                            del part['Content-Disposition']
+        else:
+            # Single-part message - ensure no weird disposition
+            content_type = msg.get_content_type()
+            if content_type in ('text/plain', 'text/html'):
+                disposition = msg.get('Content-Disposition', '')
+                filename = msg.get_filename()
+                
+                if filename and filename.lower() in ('body', 'body.txt', 'body.html', 'body.htm'):
+                    if 'Content-Disposition' in msg:
+                        del msg['Content-Disposition']
+        
+        return msg
         
         return result
     
