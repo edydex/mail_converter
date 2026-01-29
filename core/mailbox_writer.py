@@ -260,11 +260,9 @@ class MailboxWriter:
                         del msg['Content-Disposition']
         
         return msg
-        
-        return result
     
     def _write_eml_folder(self, eml_paths: List[str], output_path: str) -> WriteResult:
-        """Write emails to EML folder."""
+        """Write emails to EML folder with proper naming (YYYYMMDD_HHMMSS_Subject.eml)."""
         result = WriteResult(success=False, output_path=output_path)
         
         try:
@@ -273,21 +271,63 @@ class MailboxWriter:
             output_dir.mkdir(parents=True, exist_ok=True)
             
             total = len(eml_paths)
+            used_names = set()  # Track names to avoid collisions
+            
             for i, eml_path in enumerate(eml_paths):
                 try:
-                    self._report_progress(i + 1, total, f"Copying {Path(eml_path).name}")
+                    self._report_progress(i + 1, total, f"Processing {i+1}/{total}")
                     
-                    src = Path(eml_path)
-                    dst = output_dir / src.name
+                    # Read and parse the email to get date and subject
+                    with open(eml_path, 'rb') as f:
+                        eml_content = f.read()
                     
-                    # Handle name collision
+                    from email import message_from_bytes
+                    from email.policy import compat32
+                    from email.utils import parsedate_to_datetime
+                    import re
+                    
+                    msg = message_from_bytes(eml_content, policy=compat32)
+                    
+                    # Get date
+                    date_str = msg.get('Date', '')
+                    try:
+                        dt = parsedate_to_datetime(date_str)
+                        date_prefix = dt.strftime('%Y%m%d_%H%M%S')
+                    except:
+                        # Fallback to index if date parsing fails
+                        date_prefix = f"00000000_{i:06d}"
+                    
+                    # Get subject and sanitize for filename
+                    subject = msg.get('Subject', '') or 'No Subject'
+                    # Decode if needed
+                    if hasattr(subject, 'encode'):
+                        subject = str(subject)
+                    
+                    # Sanitize subject for filename
+                    # Remove/replace invalid characters
+                    subject = re.sub(r'[<>:"/\\|?*\x00-\x1f]', '_', subject)
+                    subject = re.sub(r'\s+', ' ', subject).strip()
+                    # Truncate if too long (keep room for date prefix and extension)
+                    max_subject_len = 100
+                    if len(subject) > max_subject_len:
+                        subject = subject[:max_subject_len].rsplit(' ', 1)[0] + '...'
+                    
+                    # Build filename
+                    base_name = f"{date_prefix}_{subject}"
+                    filename = f"{base_name}.eml"
+                    
+                    # Handle collisions
                     counter = 1
-                    while dst.exists():
-                        dst = output_dir / f"{src.stem}_{counter}{src.suffix}"
+                    while filename.lower() in used_names:
+                        filename = f"{base_name}_{counter}.eml"
                         counter += 1
                     
-                    import shutil
-                    shutil.copy2(src, dst)
+                    used_names.add(filename.lower())
+                    dst = output_dir / filename
+                    
+                    # Write the file
+                    with open(dst, 'wb') as f:
+                        f.write(eml_content)
                     result.emails_written += 1
                     
                 except Exception as e:
