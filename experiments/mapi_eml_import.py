@@ -41,27 +41,26 @@ class MAPIEmlImporter:
     Preserves original sent/received dates.
     """
     
-    # MAPI Property Tags
-    PR_SUBJECT_W = 0x0037001F  # Unicode subject
-    PR_BODY_W = 0x1000001F    # Unicode body
+    # Use ANSI property tags (like working mapi_pst_create.py)
+    # Unicode (_W / 001F) tags cause "Access denied" for some reason
+    PR_SUBJECT_A = 0x0037001E  # ANSI subject
+    PR_BODY_A = 0x1000001E    # ANSI body
     PR_HTML = 0x10130102      # HTML body (binary)
-    PR_MESSAGE_CLASS_W = 0x001A001F
+    PR_MESSAGE_CLASS_A = 0x001A001E
     PR_MESSAGE_FLAGS = 0x0E070003
     PR_MESSAGE_DELIVERY_TIME = 0x0E060040
     PR_CLIENT_SUBMIT_TIME = 0x00390040
     
-    # Sender properties
-    PR_SENDER_NAME_W = 0x0C1A001F
-    PR_SENDER_EMAIL_ADDRESS_W = 0x0C1F001F
-    PR_SENT_REPRESENTING_NAME_W = 0x0042001F
-    PR_SENT_REPRESENTING_EMAIL_ADDRESS_W = 0x0065001F
-    PR_SENDER_ADDRTYPE_W = 0x0C1E001F
-    PR_SENT_REPRESENTING_ADDRTYPE_W = 0x0064001F
+    # Sender properties (ANSI)
+    PR_SENDER_NAME_A = 0x0C1A001E
+    PR_SENDER_EMAIL_ADDRESS_A = 0x0C1F001E
+    PR_SENT_REPRESENTING_NAME_A = 0x0042001E
+    PR_SENT_REPRESENTING_EMAIL_ADDRESS_A = 0x0065001E
     
-    # Display To/CC
-    PR_DISPLAY_TO_W = 0x0E04001F
-    PR_DISPLAY_CC_W = 0x0E03001F
-    PR_DISPLAY_BCC_W = 0x0E02001F
+    # Display To/CC (ANSI)
+    PR_DISPLAY_TO_A = 0x0E04001E
+    PR_DISPLAY_CC_A = 0x0E03001E
+    PR_DISPLAY_BCC_A = 0x0E02001E
     
     # Message flags
     MSGFLAG_READ = 0x0001
@@ -400,10 +399,10 @@ class MAPIEmlImporter:
             # Convert date to PyTime
             pytime = self.pywintypes.Time(eml_data['date'])
             
-            # Build properties list
+            # Build properties list - use ANSI tags (001E not 001F)
             props = [
-                (self.PR_MESSAGE_CLASS_W, "IPM.Note"),
-                (self.PR_SUBJECT_W, eml_data['subject']),
+                (self.PR_MESSAGE_CLASS_A, "IPM.Note"),
+                (self.PR_SUBJECT_A, eml_data['subject']),
                 (self.PR_MESSAGE_FLAGS, self.MSGFLAG_READ),  # Mark as read, not unsent
                 (self.PR_MESSAGE_DELIVERY_TIME, pytime),
                 (self.PR_CLIENT_SUBMIT_TIME, pytime),
@@ -412,33 +411,29 @@ class MAPIEmlImporter:
             # Sender
             if eml_data['from_email']:
                 props.extend([
-                    (self.PR_SENDER_NAME_W, eml_data['from_name'] or eml_data['from_email']),
-                    (self.PR_SENDER_EMAIL_ADDRESS_W, eml_data['from_email']),
-                    (self.PR_SENDER_ADDRTYPE_W, "SMTP"),
-                    (self.PR_SENT_REPRESENTING_NAME_W, eml_data['from_name'] or eml_data['from_email']),
-                    (self.PR_SENT_REPRESENTING_EMAIL_ADDRESS_W, eml_data['from_email']),
-                    (self.PR_SENT_REPRESENTING_ADDRTYPE_W, "SMTP"),
+                    (self.PR_SENDER_NAME_A, eml_data['from_name'] or eml_data['from_email']),
+                    (self.PR_SENDER_EMAIL_ADDRESS_A, eml_data['from_email']),
+                    (self.PR_SENT_REPRESENTING_NAME_A, eml_data['from_name'] or eml_data['from_email']),
+                    (self.PR_SENT_REPRESENTING_EMAIL_ADDRESS_A, eml_data['from_email']),
                 ])
             
-            # Body - prefer HTML if available
-            if eml_data['body_html']:
-                # HTML body needs to be bytes
-                html_bytes = eml_data['body_html'].encode('utf-8')
-                props.append((self.PR_HTML, html_bytes))
-                # Also set plain text version
-                if eml_data['body_plain']:
-                    props.append((self.PR_BODY_W, eml_data['body_plain']))
-            elif eml_data['body_plain']:
-                props.append((self.PR_BODY_W, eml_data['body_plain']))
+            # Body - prefer plain text for ANSI compatibility, skip HTML for now
+            if eml_data['body_plain']:
+                props.append((self.PR_BODY_A, eml_data['body_plain']))
+            elif eml_data['body_html']:
+                # Strip HTML tags for plain text fallback
+                import re
+                plain = re.sub(r'<[^>]+>', '', eml_data['body_html'])
+                props.append((self.PR_BODY_A, plain))
             
             # Display To/CC
             if eml_data['to']:
                 display_to = '; '.join([f"{n} <{e}>" if n else e for n, e in eml_data['to']])
-                props.append((self.PR_DISPLAY_TO_W, display_to))
+                props.append((self.PR_DISPLAY_TO_A, display_to))
             
             if eml_data['cc']:
                 display_cc = '; '.join([f"{n} <{e}>" if n else e for n, e in eml_data['cc']])
-                props.append((self.PR_DISPLAY_CC_W, display_cc))
+                props.append((self.PR_DISPLAY_CC_A, display_cc))
             
             # Set properties
             msg.SetProps(props)
@@ -463,11 +458,11 @@ class MAPIEmlImporter:
     
     def _add_recipients(self, msg, eml_data: dict):
         """Add recipients to the message."""
-        # Recipient property tags
+        # Use ANSI property tags
         PR_RECIPIENT_TYPE = 0x0C150003
-        PR_DISPLAY_NAME_W = 0x3001001F
-        PR_EMAIL_ADDRESS_W = 0x3003001F
-        PR_ADDRTYPE_W = 0x3002001F
+        PR_DISPLAY_NAME_A = 0x3001001E
+        PR_EMAIL_ADDRESS_A = 0x3003001E
+        PR_ADDRTYPE_A = 0x3002001E
         PR_ENTRYID = 0x0FFF0102
         
         recipients = []
@@ -494,9 +489,9 @@ class MAPIEmlImporter:
             for recip in recipients:
                 row = [
                     (PR_RECIPIENT_TYPE, recip['type']),
-                    (PR_DISPLAY_NAME_W, recip['name']),
-                    (PR_EMAIL_ADDRESS_W, recip['email']),
-                    (PR_ADDRTYPE_W, "SMTP"),
+                    (PR_DISPLAY_NAME_A, recip['name']),
+                    (PR_EMAIL_ADDRESS_A, recip['email']),
+                    (PR_ADDRTYPE_A, "SMTP"),
                 ]
                 adrlist.append(row)
             
@@ -510,12 +505,13 @@ class MAPIEmlImporter:
     
     def _add_attachment(self, msg, attachment: dict):
         """Add an attachment to the message."""
+        # Use ANSI tags
         PR_ATTACH_METHOD = 0x37050003
-        PR_ATTACH_FILENAME_W = 0x3704001F
-        PR_ATTACH_LONG_FILENAME_W = 0x3707001F
+        PR_ATTACH_FILENAME_A = 0x3704001E
+        PR_ATTACH_LONG_FILENAME_A = 0x3707001E
         PR_ATTACH_DATA_BIN = 0x37010102
-        PR_ATTACH_MIME_TAG_W = 0x370E001F
-        PR_DISPLAY_NAME_W = 0x3001001F
+        PR_ATTACH_MIME_TAG_A = 0x370E001E
+        PR_DISPLAY_NAME_A = 0x3001001E
         
         ATTACH_BY_VALUE = 1
         
@@ -525,14 +521,14 @@ class MAPIEmlImporter:
             
             props = [
                 (PR_ATTACH_METHOD, ATTACH_BY_VALUE),
-                (PR_ATTACH_FILENAME_W, attachment['filename'][:255]),
-                (PR_ATTACH_LONG_FILENAME_W, attachment['filename']),
+                (PR_ATTACH_FILENAME_A, attachment['filename'][:255]),
+                (PR_ATTACH_LONG_FILENAME_A, attachment['filename']),
                 (PR_ATTACH_DATA_BIN, attachment['data']),
-                (PR_DISPLAY_NAME_W, attachment['filename']),
+                (PR_DISPLAY_NAME_A, attachment['filename']),
             ]
             
             if attachment.get('content_type'):
-                props.append((PR_ATTACH_MIME_TAG_W, attachment['content_type']))
+                props.append((PR_ATTACH_MIME_TAG_A, attachment['content_type']))
             
             attach.SetProps(props)
             attach.SaveChanges(0)
@@ -557,7 +553,7 @@ def main():
     
     # Output PST - use a fresh name to avoid permission issues
     documents = Path(os.environ.get('USERPROFILE', '')) / 'Documents'
-    pst_path = documents / 'MAPI_Import_Test2.pst'  # New name!
+    pst_path = documents / 'MAPI_Import_Test3.pst'  # New name!
     
     print(f"Output PST: {pst_path}")
     
