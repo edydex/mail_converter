@@ -174,37 +174,30 @@ class MAPIEmlImporter:
         
         # Get IPM Subtree - this is where mail folders live (same as working mapi_pst_create.py)
         PR_IPM_SUBTREE_ENTRYID = 0x35E00102
+        PR_ENTRYID = 0x0FFF0102
         result = mapi_store.GetProps([PR_IPM_SUBTREE_ENTRYID], 0)
         
-        print(f"  DEBUG GetProps result type: {type(result)}")
         print(f"  DEBUG GetProps result: {result}")
         
-        # Parse result - handle different formats
+        # Parse result - format is (status, ((tag, value), ...))
         root_eid = None
-        if isinstance(result, tuple) and len(result) > 0:
-            # Format: ((tag, value), (tag, value), ...)
-            for item in result:
-                if isinstance(item, tuple) and len(item) >= 2:
-                    tag, value = item[0], item[1]
-                    if tag == PR_IPM_SUBTREE_ENTRYID:
-                        root_eid = value
-                        break
-                    elif isinstance(value, bytes):
-                        root_eid = value
-                        break
-        elif isinstance(result, list) and len(result) > 0:
-            if isinstance(result[0], tuple):
-                root_eid = result[0][1]
-            else:
-                root_eid = result[0]
+        if isinstance(result, tuple) and len(result) >= 2:
+            status, props = result[0], result[1]
+            if isinstance(props, tuple):
+                for item in props:
+                    if isinstance(item, tuple) and len(item) >= 2:
+                        tag, value = item[0], item[1]
+                        if isinstance(value, bytes):
+                            root_eid = value
+                            print(f"  ✓ Got IPM Subtree EID from MAPI")
+                            break
         
-        if not root_eid or not isinstance(root_eid, bytes):
-            # Fallback: use Outlook's root folder entry ID
+        if not root_eid:
             print("  Falling back to Outlook root folder...")
             root_outlook = outlook_store.GetRootFolder()
             root_eid = bytes.fromhex(root_outlook.EntryID)
         
-        print(f"  DEBUG root_eid type: {type(root_eid)}, len: {len(root_eid) if root_eid else 0}")
+        print(f"  DEBUG root_eid len: {len(root_eid)}")
         
         # Open root folder with full access
         root_folder = mapi_store.OpenEntry(
@@ -213,47 +206,52 @@ class MAPIEmlImporter:
         )
         
         # Try to create the subfolder
-        PR_ENTRYID = 0x0FFF0102
+        folder_eid = None
         try:
             new_folder = root_folder.CreateFolder(1, folder_name, "", None, 0)
             print(f"✓ Created folder: {folder_name}")
             
-            # Get its entry ID
+            # Get its entry ID - same format parsing
             folder_props = new_folder.GetProps([PR_ENTRYID], 0)
             print(f"  DEBUG folder_props: {folder_props}")
             
-            folder_eid = None
-            if isinstance(folder_props, tuple):
-                for item in folder_props:
-                    if isinstance(item, tuple) and len(item) >= 2:
-                        if isinstance(item[1], bytes):
-                            folder_eid = item[1]
-                            break
-            elif isinstance(folder_props, list) and len(folder_props) > 0:
-                if isinstance(folder_props[0], tuple):
-                    folder_eid = folder_props[0][1]
-                else:
-                    folder_eid = folder_props[0]
+            if isinstance(folder_props, tuple) and len(folder_props) >= 2:
+                status, props = folder_props[0], folder_props[1]
+                if isinstance(props, tuple):
+                    for item in props:
+                        if isinstance(item, tuple) and len(item) >= 2:
+                            if isinstance(item[1], bytes):
+                                folder_eid = item[1]
+                                break
             
             if not folder_eid:
                 # Use the folder directly without re-opening
-                print("✓ Using folder directly (couldn't get entry ID)")
+                print("✓ Using newly created folder directly")
                 return new_folder
                 
         except Exception as e:
-            if "MAPI_E_COLLISION" in str(e) or "already exists" in str(e).lower():
-                print(f"Folder exists, searching...")
+            error_code = getattr(e, 'args', [None])[0] if hasattr(e, 'args') else None
+            # MAPI_E_COLLISION = 0x80040604 = -2147219964
+            is_collision = (
+                error_code == -2147219964 or 
+                "MAPI_E_COLLISION" in str(e) or 
+                "already exists" in str(e).lower() or
+                "0x80040604" in str(e)
+            )
+            
+            if is_collision:
+                print(f"  Folder exists, searching via table...")
                 # Folder exists - find it via MAPI table
                 table = root_folder.GetHierarchyTable(0)
                 table.SetColumns([PR_ENTRYID, 0x3001001F], 0)  # PR_ENTRYID, PR_DISPLAY_NAME_W
                 
-                folder_eid = None
                 while True:
                     rows = table.QueryRows(10, 0)
                     if not rows:
                         break
                     for row in rows:
                         eid, name = row[0][1], row[1][1]
+                        print(f"    Found folder: {name}")
                         if name == folder_name:
                             folder_eid = eid
                             break
