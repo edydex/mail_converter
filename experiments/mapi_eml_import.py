@@ -169,55 +169,76 @@ class MAPIEmlImporter:
         return mapi_store, outlook_store
     
     def get_or_create_folder(self, mapi_store, outlook_store, folder_name: str):
-        """Get or create a folder in the PST."""
+        """Get or create a folder in the PST using pure MAPI (same as working script)."""
         import time
         
-        # Get root folder via Outlook
-        root_outlook = outlook_store.GetRootFolder()
-        root_eid = bytes.fromhex(root_outlook.EntryID)
+        # Get IPM Subtree - this is where mail folders live (same as working mapi_pst_create.py)
+        PR_IPM_SUBTREE_ENTRYID = 0x35E00102
+        result = mapi_store.GetProps([PR_IPM_SUBTREE_ENTRYID], 0)
         
-        # Open root via MAPI
+        # Parse result - handle different formats
+        if isinstance(result, list) and len(result) > 0:
+            if isinstance(result[0], tuple):
+                root_eid = result[0][1]
+            else:
+                root_eid = result[0]
+        else:
+            raise RuntimeError("Could not get IPM Subtree entry ID")
+        
+        # Open root folder with full access
         root_folder = mapi_store.OpenEntry(
             root_eid, None, 
             self.mapi.MAPI_MODIFY | self.mapi.MAPI_BEST_ACCESS
         )
         
-        # Check if folder already exists
-        for outlook_folder in root_outlook.Folders:
-            if outlook_folder.Name == folder_name:
-                folder_eid = bytes.fromhex(outlook_folder.EntryID)
-                folder = mapi_store.OpenEntry(
-                    folder_eid, None,
-                    self.mapi.MAPI_MODIFY | self.mapi.MAPI_BEST_ACCESS
-                )
-                print(f"✓ Opened existing folder: {folder_name}")
-                return folder
-        
-        # Create new folder
+        # Try to create the subfolder
+        PR_ENTRYID = 0x0FFF0102
         try:
-            root_folder.CreateFolder(1, folder_name, "", None, 0)
+            new_folder = root_folder.CreateFolder(1, folder_name, "", None, 0)
             print(f"✓ Created folder: {folder_name}")
+            
+            # Get its entry ID
+            folder_props = new_folder.GetProps([PR_ENTRYID], 0)
+            if isinstance(folder_props, list) and len(folder_props) > 0:
+                if isinstance(folder_props[0], tuple):
+                    folder_eid = folder_props[0][1]
+                else:
+                    folder_eid = folder_props[0]
+            else:
+                raise RuntimeError("Could not get new folder entry ID")
+                
         except Exception as e:
-            if "MAPI_E_COLLISION" not in str(e) and "already exists" not in str(e).lower():
+            if "MAPI_E_COLLISION" in str(e) or "already exists" in str(e).lower():
+                print(f"Folder exists, searching...")
+                # Folder exists - find it via MAPI table
+                table = root_folder.GetHierarchyTable(0)
+                table.SetColumns([PR_ENTRYID, 0x3001001F], 0)  # PR_ENTRYID, PR_DISPLAY_NAME_W
+                
+                folder_eid = None
+                while True:
+                    rows = table.QueryRows(10, 0)
+                    if not rows:
+                        break
+                    for row in rows:
+                        eid, name = row[0][1], row[1][1]
+                        if name == folder_name:
+                            folder_eid = eid
+                            break
+                    if folder_eid:
+                        break
+                
+                if not folder_eid:
+                    raise RuntimeError(f"Could not find existing folder: {folder_name}")
+            else:
                 raise
         
-        # Give Outlook a moment to sync
-        time.sleep(0.3)
-        
-        # Re-fetch from Outlook and open with write access
-        # Need to refresh the folder list
-        root_outlook = outlook_store.GetRootFolder()
-        for outlook_folder in root_outlook.Folders:
-            if outlook_folder.Name == folder_name:
-                folder_eid = bytes.fromhex(outlook_folder.EntryID)
-                folder = mapi_store.OpenEntry(
-                    folder_eid, None,
-                    self.mapi.MAPI_MODIFY | self.mapi.MAPI_BEST_ACCESS
-                )
-                print(f"✓ Opened folder with write access")
-                return folder
-        
-        raise RuntimeError(f"Could not find created folder: {folder_name}")
+        # Re-open folder with full write access
+        folder = mapi_store.OpenEntry(
+            folder_eid, None,
+            self.mapi.MAPI_MODIFY | self.mapi.MAPI_BEST_ACCESS
+        )
+        print(f"✓ Opened folder with write access")
+        return folder
     
     def parse_eml(self, eml_path: str) -> dict:
         """Parse an EML file and extract all components."""
