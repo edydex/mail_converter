@@ -10,7 +10,13 @@ on:
       - 'gui/**'
       - 'build/**'
       - 'requirements.txt'
-      - '.github/workflows/**'
+      - '.github/workflows/build.yml'
+    paths-ignore:
+      - 'experiments/**'
+      - '*.md'
+      - 'docs/**'
+      - '.gitignore'
+      - 'LICENSE'
     tags:
       - 'v*'
   workflow_dispatch:
@@ -34,6 +40,11 @@ jobs:
   build-windows-exe:
     name: Build Windows EXE
     runs-on: windows-latest
+    
+    # Skip if commit message contains [skip ci] or [no build]
+    if: |
+      !contains(github.event.head_commit.message, '[skip ci]') &&
+      !contains(github.event.head_commit.message, '[no build]')
     
     steps:
     - name: Checkout Repository
