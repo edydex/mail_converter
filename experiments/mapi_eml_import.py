@@ -124,47 +124,65 @@ class MAPIEmlImporter:
         except:
             pass
     
-    def create_or_open_pst(self, pst_path: str) -> Tuple[object, object]:
+    def create_or_open_pst(self, pst_path: str, clean_start: bool = True) -> Tuple[object, object]:
         """
         Create a new PST or open existing one.
         Returns (mapi_store, outlook_store) tuple.
+        
+        If clean_start=True, removes and recreates the PST for a fresh start.
         """
+        import time
         pst_path = Path(pst_path).resolve()
         
-        # Check if PST already mounted via Outlook
+        # Clean start: Remove existing PST (like the working mapi_pst_create.py does)
+        if clean_start and pst_path.exists():
+            print(f"Cleaning up existing PST: {pst_path}")
+            # First remove from Outlook profile if mounted
+            try:
+                for store in self.namespace.Stores:
+                    if store.FilePath:
+                        if Path(store.FilePath).resolve() == pst_path:
+                            print(f"  Removing from Outlook profile...")
+                            self.namespace.RemoveStore(store.GetRootFolder())
+                            time.sleep(0.5)
+                            break
+            except Exception as e:
+                print(f"  ⚠ Could not remove from profile: {e}")
+            
+            # Delete the file
+            try:
+                import os
+                os.remove(pst_path)
+                print("  ✓ Deleted old PST file")
+                time.sleep(0.5)
+            except Exception as e:
+                print(f"  ⚠ Could not delete file: {e}")
+        
+        # Add PST to Outlook profile (creates if doesn't exist)
+        print(f"Adding PST to profile: {pst_path}")
+        self.namespace.AddStore(str(pst_path))
+        
+        # Give it time to initialize
+        time.sleep(1)
+        
+        # Find the store we just added
         outlook_store = None
         for store in self.namespace.Stores:
             if store.FilePath:
                 if Path(store.FilePath).resolve() == pst_path:
                     outlook_store = store
-                    print(f"✓ PST already mounted: {store.DisplayName}")
+                    print(f"✓ PST added: {store.DisplayName}")
                     break
-        
-        # Add to profile if not mounted
-        if not outlook_store:
-            print(f"Adding PST to profile: {pst_path}")
-            self.namespace.AddStore(str(pst_path))
-            
-            # Find it
-            import time
-            time.sleep(0.5)
-            for store in self.namespace.Stores:
-                if store.FilePath:
-                    if Path(store.FilePath).resolve() == pst_path:
-                        outlook_store = store
-                        print(f"✓ PST added: {store.DisplayName}")
-                        break
         
         if not outlook_store:
             raise RuntimeError(f"Could not find PST store: {pst_path}")
         
         # Now open via MAPI using GetMsgStoresTable (same as working script!)
         PR_ENTRYID = 0x0FFF0102
-        PR_DISPLAY_NAME_W = 0x3001001F
-        PR_MDB_PROVIDER = 0x34140102
+        PR_DISPLAY_NAME_A = 0x3001001E
         
         stores_table = self.session.GetMsgStoresTable(0)
-        stores_table.SetColumns([PR_ENTRYID, PR_DISPLAY_NAME_W], 0)
+        stores_table.SetColumns([PR_ENTRYID, PR_DISPLAY_NAME_A], 0)
         
         mapi_store = None
         target_name = outlook_store.DisplayName
@@ -176,6 +194,8 @@ class MAPIEmlImporter:
             for row in rows:
                 store_eid = row[0][1]
                 store_name = row[1][1]
+                if isinstance(store_name, bytes):
+                    store_name = store_name.decode('utf-8', errors='replace')
                 print(f"  Found store: {store_name}")
                 
                 if store_name == target_name:
