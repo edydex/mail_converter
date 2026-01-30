@@ -547,11 +547,15 @@ def main():
             if input_path.is_file() and input_path.suffix.lower() == '.eml':
                 eml_files = [input_path]
             elif input_path.is_dir():
-                eml_files = list(input_path.glob('*.eml')) + list(input_path.glob('*.EML'))
-                # Also check for files without extension (readpst output)
+                # Single pass through directory - no duplicates possible
                 for f in input_path.iterdir():
-                    if f.is_file() and not f.suffix:
-                        # Check if it looks like an email
+                    if not f.is_file():
+                        continue
+                    
+                    if f.suffix.lower() == '.eml':
+                        eml_files.append(f)
+                    elif not f.suffix:
+                        # Check if extensionless file looks like an email (readpst output)
                         try:
                             with open(f, 'rb') as test_f:
                                 start = test_f.read(100)
@@ -559,6 +563,9 @@ def main():
                                     eml_files.append(f)
                         except:
                             pass
+                
+                # Sort for consistent ordering
+                eml_files.sort(key=lambda x: x.name.lower())
             
             print(f"Found {len(eml_files)} EML files to import")
             
