@@ -7,6 +7,80 @@ Main entry point for the application.
 
 import sys
 import os
+
+# =============================================================================
+# CRITICAL: Set DPI awareness BEFORE any other imports
+# This MUST happen before tkinter, WeasyPrint, or any GUI library is loaded
+# =============================================================================
+def setup_dpi_awareness():
+    """
+    Configure Windows DPI awareness at process startup.
+    
+    Must be called before ANY GUI imports (tkinter, etc.) or the setting
+    will be ignored. This affects how WeasyPrint/Cairo render PDFs.
+    """
+    if sys.platform != 'win32':
+        return {'status': 'skipped', 'reason': 'Not Windows'}
+    
+    result = {'status': 'unknown'}
+    
+    try:
+        import ctypes
+        
+        # Try SetProcessDpiAwarenessContext (Windows 10 1703+) - most flexible
+        try:
+            # DPI_AWARENESS_CONTEXT_UNAWARE = -1
+            # DPI_AWARENESS_CONTEXT_SYSTEM_AWARE = -2
+            # DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE = -3
+            # DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 = -4
+            # DPI_AWARENESS_CONTEXT_UNAWARE_GDISCALED = -5  # Best for our use case
+            
+            # Try UNAWARE_GDISCALED first (Windows 10 1809+) - gives us DPI unaware
+            # behavior but with better quality text rendering
+            user32 = ctypes.windll.user32
+            try:
+                # -5 = DPI_AWARENESS_CONTEXT_UNAWARE_GDISCALED
+                if user32.SetProcessDpiAwarenessContext(-5):
+                    result = {'status': 'success', 'method': 'SetProcessDpiAwarenessContext(-5)', 'mode': 'UNAWARE_GDISCALED'}
+                    return result
+            except (AttributeError, OSError):
+                pass
+            
+            # Try plain UNAWARE
+            try:
+                if user32.SetProcessDpiAwarenessContext(-1):
+                    result = {'status': 'success', 'method': 'SetProcessDpiAwarenessContext(-1)', 'mode': 'UNAWARE'}
+                    return result
+            except (AttributeError, OSError):
+                pass
+        except Exception:
+            pass
+        
+        # Fall back to SetProcessDpiAwareness (Windows 8.1+)
+        try:
+            shcore = ctypes.windll.shcore
+            # PROCESS_DPI_UNAWARE = 0
+            hr = shcore.SetProcessDpiAwareness(0)
+            if hr == 0:  # S_OK
+                result = {'status': 'success', 'method': 'SetProcessDpiAwareness(0)', 'mode': 'UNAWARE'}
+                return result
+            else:
+                result = {'status': 'failed', 'method': 'SetProcessDpiAwareness', 'error': f'HRESULT={hr}'}
+        except (AttributeError, OSError) as e:
+            result = {'status': 'failed', 'method': 'SetProcessDpiAwareness', 'error': str(e)}
+        
+        # Last resort: SetProcessDPIAware (Vista+) - makes it SYSTEM_AWARE, not ideal
+        # We skip this because SYSTEM_AWARE is worse than letting Windows handle it
+        
+    except Exception as e:
+        result = {'status': 'error', 'error': str(e)}
+    
+    return result
+
+# Call DPI setup IMMEDIATELY - before any other imports
+_dpi_result = setup_dpi_awareness()
+
+# Now we can import other modules
 import logging
 from pathlib import Path
 
@@ -94,8 +168,20 @@ def setup_logging():
         ]
     )
     
+    logger = logging.getLogger(__name__)
+    
     # Log the log file location
-    logging.getLogger(__name__).info(f"Log file location: {log_file}")
+    logger.info(f"Log file location: {log_file}")
+    
+    # Log DPI setup result (captured at startup)
+    logger.info(f"DPI Setup Result: {_dpi_result}")
+    
+    # Log system info for troubleshooting
+    try:
+        from utils.system_info import log_system_info
+        log_system_info()
+    except Exception as e:
+        logger.warning(f"Could not log system info: {e}")
     
     # Reduce noise from some libraries
     logging.getLogger('PIL').setLevel(logging.WARNING)

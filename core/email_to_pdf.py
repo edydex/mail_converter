@@ -18,24 +18,12 @@ from datetime import datetime
 import logging
 from bs4 import BeautifulSoup
 
-# Disable Windows DPI scaling for consistent PDF rendering
-# This prevents high-DPI displays (like Surface Pro) from affecting output
+# Note: DPI awareness is now set in main.py BEFORE any imports
+# This ensures it happens before tkinter creates any windows.
+# We still set GTK/Cairo environment variables here as a safety measure.
 if sys.platform == 'win32':
-    try:
-        import ctypes
-        # Set process to be DPI unaware (use raw pixels)
-        # PROCESS_DPI_UNAWARE = 0
-        # PROCESS_SYSTEM_DPI_AWARE = 1  
-        # PROCESS_PER_MONITOR_DPI_AWARE = 2
-        ctypes.windll.shcore.SetProcessDpiAwareness(0)
-    except Exception:
-        try:
-            # Fallback for older Windows versions
-            ctypes.windll.user32.SetProcessDPIAware()
-        except Exception:
-            pass
-    
-    # Also set environment variables that GTK/Cairo/Pango use
+    # Set environment variables that GTK/Cairo/Pango use for rendering
+    # These affect WeasyPrint's PDF output
     os.environ['GDK_SCALE'] = '1'
     os.environ['GDK_DPI_SCALE'] = '1'
 
@@ -208,10 +196,14 @@ class EmailToPDFConverter:
             
             # Page size CSS with configurable margin
             margin_str = f"{self.page_margin}in"
+            # Use explicit physical dimensions instead of keywords like "letter" or "A4"
+            # This ensures consistent output regardless of screen DPI or system settings
             if self.page_size_name == "Letter":
-                page_size_css = f"@page {{ size: letter; margin: {margin_str}; }}"
+                # Letter size: 8.5 x 11 inches
+                page_size_css = f"@page {{ size: 8.5in 11in; margin: {margin_str}; }}"
             else:
-                page_size_css = f"@page {{ size: A4; margin: {margin_str}; }}"
+                # A4 size: 210 x 297 mm
+                page_size_css = f"@page {{ size: 210mm 297mm; margin: {margin_str}; }}"
             
             css = CSS(string=page_size_css, font_config=font_config)
             
@@ -260,12 +252,20 @@ class EmailToPDFConverter:
 <head>
     <meta charset="UTF-8">
     <style>
+        /* Reset any browser defaults and ensure consistent rendering */
+        html {{
+            font-size: 11pt;
+        }}
+        
         body {{
             font-family: DejaVu Sans, Arial, Helvetica, sans-serif;
             font-size: 11pt;
             line-height: 1.4;
             color: #333;
             max-width: 100%;
+            width: 100%;
+            margin: 0;
+            padding: 0;
         }}
         
         .email-header {{

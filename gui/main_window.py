@@ -120,6 +120,9 @@ class MainWindow:
         title_frame = ttk.Frame(self.main_frame)
         title_frame.grid(row=0, column=0, sticky="ew", pady=(0, 10))
         
+        # Create menu bar
+        self._create_menu_bar()
+        
         title_label = ttk.Label(
             title_frame, 
             text="Mayo's Mail Converter",
@@ -351,6 +354,89 @@ class MainWindow:
             state=tk.DISABLED
         )
         self.cancel_btn.pack(side=tk.LEFT, padx=10)
+    
+    def _create_menu_bar(self):
+        """Create the application menu bar."""
+        menubar = tk.Menu(self.root)
+        self.root.config(menu=menubar)
+        
+        # Help menu
+        help_menu = tk.Menu(menubar, tearoff=0)
+        menubar.add_cascade(label="Help", menu=help_menu)
+        
+        help_menu.add_command(label="System Diagnostics...", command=self._show_diagnostics)
+        help_menu.add_separator()
+        help_menu.add_command(label="About", command=self._show_about)
+    
+    def _show_diagnostics(self):
+        """Show system diagnostics dialog."""
+        try:
+            from utils.system_info import generate_diagnostic_report
+            report = generate_diagnostic_report()
+        except Exception as e:
+            report = f"Error generating diagnostics: {e}"
+        
+        # Create dialog window
+        diag_window = tk.Toplevel(self.root)
+        diag_window.title("System Diagnostics")
+        diag_window.geometry("700x500")
+        diag_window.transient(self.root)
+        
+        # Text widget with scrollbar
+        text_frame = ttk.Frame(diag_window)
+        text_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        
+        scrollbar = ttk.Scrollbar(text_frame)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        
+        text_widget = tk.Text(
+            text_frame, 
+            wrap=tk.NONE, 
+            font=('Courier', 10),
+            yscrollcommand=scrollbar.set
+        )
+        text_widget.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scrollbar.config(command=text_widget.yview)
+        
+        # Insert report
+        text_widget.insert('1.0', report)
+        text_widget.config(state=tk.DISABLED)
+        
+        # Button frame
+        btn_frame = ttk.Frame(diag_window)
+        btn_frame.pack(fill=tk.X, padx=10, pady=(0, 10))
+        
+        def copy_to_clipboard():
+            self.root.clipboard_clear()
+            self.root.clipboard_append(report)
+            messagebox.showinfo("Copied", "Diagnostic report copied to clipboard!")
+        
+        def save_to_file():
+            filepath = filedialog.asksaveasfilename(
+                defaultextension=".txt",
+                filetypes=[("Text files", "*.txt"), ("All files", "*.*")],
+                initialfilename="diagnostics_report.txt"
+            )
+            if filepath:
+                try:
+                    with open(filepath, 'w') as f:
+                        f.write(report)
+                    messagebox.showinfo("Saved", f"Report saved to:\n{filepath}")
+                except Exception as e:
+                    messagebox.showerror("Error", f"Could not save file: {e}")
+        
+        ttk.Button(btn_frame, text="Copy to Clipboard", command=copy_to_clipboard).pack(side=tk.LEFT, padx=5)
+        ttk.Button(btn_frame, text="Save to File", command=save_to_file).pack(side=tk.LEFT, padx=5)
+        ttk.Button(btn_frame, text="Close", command=diag_window.destroy).pack(side=tk.RIGHT, padx=5)
+    
+    def _show_about(self):
+        """Show about dialog."""
+        messagebox.showinfo(
+            "About Mayo's Mail Converter",
+            "Mayo's Mail Converter v1.3.0\n\n"
+            "Convert PST, MBOX, MSG, and EML files to searchable PDFs.\n\n"
+            "https://github.com/yourusername/mail_converter"
+        )
     
     def _bind_events(self):
         """Bind event handlers."""

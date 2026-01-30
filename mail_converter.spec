@@ -68,6 +68,12 @@ a = Analysis(
         'reportlab.graphics.barcode.usps4s',
         'reportlab.graphics.barcode.ecc200datamatrix',
         'pkg_resources.py2_warn',
+        # pywin32 MAPI modules for PST writing
+        'win32com.mapi',
+        'win32com.mapi.mapi',
+        'win32com.mapi.mapitags',
+        'pywintypes',
+        'pythoncom',
     ],
     hookspath=[],
     hooksconfig={},
@@ -78,6 +84,9 @@ a = Analysis(
         'numpy.distutils',
         'IPython',
         'jupyter',
+        # PIL modules we don't need (AVIF causes extraction errors)
+        'PIL._avif',
+        'pillow_avif',
     ],
     win_no_prefer_redirects=False,
     win_private_assemblies=False,
