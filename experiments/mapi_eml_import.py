@@ -355,10 +355,18 @@ class MAPIEmlImporter:
             # Convert date to PyTime
             pytime = self.pywintypes.Time(eml_data['date'])
             
-            # Build properties list - use mapitags module like working script
+            # Use Unicode property tags for text (to handle international characters)
+            PR_MESSAGE_CLASS_W = 0x001A001F
+            PR_SUBJECT_W = 0x0037001F
+            PR_BODY_W = 0x1000001F
+            PR_SENDER_NAME_W = 0x0C1A001F
+            PR_SENDER_EMAIL_ADDRESS_W = 0x0C1F001F
+            PR_SENT_REPRESENTING_NAME_W = 0x0042001F
+            PR_SENT_REPRESENTING_EMAIL_W = 0x0065001F
+            
             props = [
-                (self.mapitags.PR_MESSAGE_CLASS_A, "IPM.Note"),
-                (self.mapitags.PR_SUBJECT_A, eml_data['subject']),
+                (PR_MESSAGE_CLASS_W, "IPM.Note"),
+                (PR_SUBJECT_W, eml_data['subject']),
                 (self.mapitags.PR_MESSAGE_FLAGS, 0x0001),  # MSGFLAG_READ
                 (self.mapitags.PR_MESSAGE_DELIVERY_TIME, pytime),
                 (self.mapitags.PR_CLIENT_SUBMIT_TIME, pytime),
@@ -367,24 +375,24 @@ class MAPIEmlImporter:
             # Sender
             if eml_data['from_email']:
                 props.extend([
-                    (self.mapitags.PR_SENDER_NAME_A, eml_data['from_name'] or eml_data['from_email']),
-                    (self.mapitags.PR_SENDER_EMAIL_ADDRESS_A, eml_data['from_email']),
-                    (0x0042001E, eml_data['from_name'] or eml_data['from_email']),  # PR_SENT_REPRESENTING_NAME_A
-                    (0x0065001E, eml_data['from_email']),  # PR_SENT_REPRESENTING_EMAIL_ADDRESS_A
+                    (PR_SENDER_NAME_W, eml_data['from_name'] or eml_data['from_email']),
+                    (PR_SENDER_EMAIL_ADDRESS_W, eml_data['from_email']),
+                    (PR_SENT_REPRESENTING_NAME_W, eml_data['from_name'] or eml_data['from_email']),
+                    (PR_SENT_REPRESENTING_EMAIL_W, eml_data['from_email']),
                 ])
             
             # Body
             if eml_data['body_plain']:
-                props.append((self.mapitags.PR_BODY_A, eml_data['body_plain']))
+                props.append((PR_BODY_W, eml_data['body_plain']))
             elif eml_data['body_html']:
                 import re
                 plain = re.sub(r'<[^>]+>', '', eml_data['body_html'])
-                props.append((self.mapitags.PR_BODY_A, plain))
+                props.append((PR_BODY_W, plain))
             
             # Set properties
             msg.SetProps(props)
             
-            # Save (skip recipients and attachments for now to keep it simple)
+            # Save
             msg.SaveChanges(0)
             
             return True
