@@ -28,6 +28,7 @@ def get_system_info() -> Dict[str, Any]:
         'python': {},
         'display': {},
         'dpi': {},
+        'fonts': {},
         'environment': {},
         'weasyprint': {},
         'libraries': {},
@@ -58,6 +59,9 @@ def get_system_info() -> Dict[str, Any]:
     else:
         info['display'] = {'note': 'Display info collection only implemented for Windows'}
         info['dpi'] = {'note': 'DPI info collection only implemented for Windows'}
+    
+    # Font info - critical for understanding text rendering differences
+    info['fonts'] = get_font_info()
     
     # Environment variables related to display/scaling
     dpi_env_vars = [
@@ -184,7 +188,65 @@ def get_windows_dpi_info() -> Dict[str, Any]:
     return dpi_info
 
 
+def get_font_info() -> Dict[str, Any]:
+    """Get information about available fonts and font matching."""
+    font_info = {}
+    
+    try:
+        import subprocess
+        import shutil
+        
+        # Check if fc-match is available (Fontconfig tool)
+        fc_match = shutil.which('fc-match')
+        if fc_match:
+            font_info['fontconfig_available'] = True
+            
+            # Test what fonts are matched for common font families
+            test_fonts = ['Arial', 'Segoe UI', 'DejaVu Sans', 'sans-serif', 'serif', 'monospace']
+            font_info['font_matches'] = {}
+            
+            for font_name in test_fonts:
+                try:
+                    result = subprocess.run(
+                        [fc_match, font_name],
+                        capture_output=True,
+                        text=True,
+                        timeout=5
+                    )
+                    if result.returncode == 0:
+                        font_info['font_matches'][font_name] = result.stdout.strip()
+                except Exception as e:
+                    font_info['font_matches'][font_name] = f'Error: {e}'
+        else:
+            font_info['fontconfig_available'] = False
+            font_info['note'] = 'fc-match not found - cannot query font matching'
+            
+        # Check for common fonts on Windows
+        if sys.platform == 'win32':
+            import ctypes
+            from ctypes import wintypes
+            
+            # Get Windows fonts directory
+            try:
+                fonts_dir = Path(os.environ.get('WINDIR', 'C:\\Windows')) / 'Fonts'
+                if fonts_dir.exists():
+                    # Check for key fonts
+                    key_fonts = ['arial.ttf', 'segoeui.ttf', 'tahoma.ttf', 'calibri.ttf']
+                    font_info['windows_fonts'] = {}
+                    for font_file in key_fonts:
+                        font_path = fonts_dir / font_file
+                        font_info['windows_fonts'][font_file] = font_path.exists()
+            except Exception as e:
+                font_info['windows_fonts_error'] = str(e)
+                
+    except Exception as e:
+        font_info['error'] = str(e)
+    
+    return font_info
+
+
 def get_weasyprint_info() -> Dict[str, Any]:
+
     """Get WeasyPrint availability and configuration info."""
     wp_info = {}
     
@@ -301,6 +363,20 @@ def generate_diagnostic_report() -> str:
         report.append("-" * 40)
         for k, v in info['dpi'].items():
             report.append(f"  {k}: {v}")
+        report.append("")
+    
+    # Fonts - CRITICAL for understanding rendering differences
+    if info.get('fonts'):
+        report.append("FONT INFO (critical for text rendering):")
+        report.append("-" * 40)
+        fonts = info['fonts']
+        for k, v in fonts.items():
+            if isinstance(v, dict):
+                report.append(f"  {k}:")
+                for fk, fv in v.items():
+                    report.append(f"    {fk}: {fv}")
+            else:
+                report.append(f"  {k}: {v}")
         report.append("")
     
     # Environment

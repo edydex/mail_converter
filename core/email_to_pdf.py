@@ -246,7 +246,13 @@ class EmailToPDFConverter:
             attachment_html = self._build_attachment_list_html(email_data)
         
         # Complete HTML document with CSS
-        # Use DejaVu Sans which is bundled with WeasyPrint and will be embedded
+        # IMPORTANT: Font consistency is critical for identical rendering.
+        # Different machines may have different fonts installed, and Fontconfig
+        # can substitute fonts with different metrics, causing text wrapping differences.
+        # 
+        # Solution: Use Segoe UI (Windows built-in since Vista) as primary font,
+        # with Arial as fallback. These are present on ALL Windows systems.
+        # For non-Windows, we fall back to system defaults.
         html = f"""<!DOCTYPE html>
 <html>
 <head>
@@ -258,7 +264,9 @@ class EmailToPDFConverter:
         }}
         
         body {{
-            font-family: DejaVu Sans, Arial, Helvetica, sans-serif;
+            /* Segoe UI is built into Windows and has consistent metrics.
+               Arial is the universal fallback available everywhere. */
+            font-family: 'Segoe UI', Arial, sans-serif;
             font-size: 11pt;
             line-height: 1.4;
             color: #333;
