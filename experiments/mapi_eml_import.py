@@ -334,21 +334,32 @@ class MAPIEmlImporter:
             # Convert date to PyTime
             pytime = self.pywintypes.Time(eml_data['date'])
             
-            # Use Unicode property tags for text (to handle international characters)
-            PR_MESSAGE_CLASS_W = 0x001A001F
-            PR_SUBJECT_W = 0x0037001F
-            PR_BODY_W = 0x1000001F
-            PR_SENDER_NAME_W = 0x0C1A001F
-            PR_SENDER_EMAIL_ADDRESS_W = 0x0C1F001F
-            PR_SENT_REPRESENTING_NAME_W = 0x0042001F
-            PR_SENT_REPRESENTING_EMAIL_W = 0x0065001F
-            PR_DISPLAY_TO_W = 0x0E04001F
-            PR_DISPLAY_CC_W = 0x0E03001F
+            # Use ANSI property tags (Unicode causes "Access denied")
+            # These match the working mapi_pst_create.py exactly
+            PR_MESSAGE_CLASS_A = self.mapitags.PR_MESSAGE_CLASS_A
+            PR_SUBJECT_A = self.mapitags.PR_SUBJECT_A
+            PR_BODY_A = self.mapitags.PR_BODY_A
+            PR_SENDER_NAME_A = self.mapitags.PR_SENDER_NAME_A
+            PR_SENDER_EMAIL_A = self.mapitags.PR_SENDER_EMAIL_ADDRESS_A
+            PR_SENT_REP_NAME_A = 0x0042001E  # PR_SENT_REPRESENTING_NAME_A
+            PR_SENT_REP_EMAIL_A = 0x0065001E  # PR_SENT_REPRESENTING_EMAIL_ADDRESS_A
+            PR_DISPLAY_TO_A = 0x0E04001E
+            PR_DISPLAY_CC_A = 0x0E03001E
             PR_HTML = 0x10130102  # Binary
             
+            # Helper to safely encode strings for ANSI properties
+            def safe_str(s, max_len=None):
+                if not s:
+                    return ""
+                # Replace non-ASCII with ? for ANSI compatibility
+                result = s.encode('latin-1', errors='replace').decode('latin-1')
+                if max_len:
+                    result = result[:max_len]
+                return result
+            
             props = [
-                (PR_MESSAGE_CLASS_W, "IPM.Note"),
-                (PR_SUBJECT_W, eml_data['subject']),
+                (PR_MESSAGE_CLASS_A, "IPM.Note"),
+                (PR_SUBJECT_A, safe_str(eml_data['subject'], 255)),
                 (self.mapitags.PR_MESSAGE_FLAGS, 0x0001),  # MSGFLAG_READ
                 (self.mapitags.PR_MESSAGE_DELIVERY_TIME, pytime),
                 (self.mapitags.PR_CLIENT_SUBMIT_TIME, pytime),
@@ -357,20 +368,20 @@ class MAPIEmlImporter:
             # Sender
             if eml_data['from_email']:
                 props.extend([
-                    (PR_SENDER_NAME_W, eml_data['from_name'] or eml_data['from_email']),
-                    (PR_SENDER_EMAIL_ADDRESS_W, eml_data['from_email']),
-                    (PR_SENT_REPRESENTING_NAME_W, eml_data['from_name'] or eml_data['from_email']),
-                    (PR_SENT_REPRESENTING_EMAIL_W, eml_data['from_email']),
+                    (PR_SENDER_NAME_A, safe_str(eml_data['from_name'] or eml_data['from_email'])),
+                    (PR_SENDER_EMAIL_A, safe_str(eml_data['from_email'])),
+                    (PR_SENT_REP_NAME_A, safe_str(eml_data['from_name'] or eml_data['from_email'])),
+                    (PR_SENT_REP_EMAIL_A, safe_str(eml_data['from_email'])),
                 ])
             
             # Display To/CC (shows in header)
             if eml_data['to']:
                 display_to = '; '.join([f"{n} <{e}>" if n else e for n, e in eml_data['to']])
-                props.append((PR_DISPLAY_TO_W, display_to))
+                props.append((PR_DISPLAY_TO_A, safe_str(display_to)))
             
             if eml_data['cc']:
                 display_cc = '; '.join([f"{n} <{e}>" if n else e for n, e in eml_data['cc']])
-                props.append((PR_DISPLAY_CC_W, display_cc))
+                props.append((PR_DISPLAY_CC_A, safe_str(display_cc)))
             
             # Body - prefer HTML, fallback to plain
             if eml_data['body_html']:
@@ -378,9 +389,9 @@ class MAPIEmlImporter:
                 props.append((PR_HTML, html_bytes))
                 # Also set plain text version
                 if eml_data['body_plain']:
-                    props.append((PR_BODY_W, eml_data['body_plain']))
+                    props.append((PR_BODY_A, safe_str(eml_data['body_plain'])))
             elif eml_data['body_plain']:
-                props.append((PR_BODY_W, eml_data['body_plain']))
+                props.append((PR_BODY_A, safe_str(eml_data['body_plain'])))
             
             # Set properties
             msg.SetProps(props)
