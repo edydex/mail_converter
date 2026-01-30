@@ -124,54 +124,33 @@ class MAPIEmlImporter:
         except:
             pass
     
-    def create_or_open_pst(self, pst_path: str, clean_start: bool = True) -> Tuple[object, object]:
+    def create_or_open_pst(self, pst_path: str) -> Tuple[object, object]:
         """
-        Create a new PST or open existing one.
+        Create a new PST file.
         Returns (mapi_store, outlook_store) tuple.
         
-        If clean_start=True, removes and recreates the PST for a fresh start.
+        NOTE: Always use a unique filename (timestamped) to avoid store caching issues.
         """
         import time
         pst_path = Path(pst_path).resolve()
         
-        # Clean start: Remove existing PST (like the working mapi_pst_create.py does)
-        if clean_start and pst_path.exists():
-            print(f"Cleaning up existing PST: {pst_path}")
-            # First remove from Outlook profile if mounted
-            try:
-                for store in self.namespace.Stores:
-                    if store.FilePath:
-                        if Path(store.FilePath).resolve() == pst_path:
-                            print(f"  Removing from Outlook profile...")
-                            self.namespace.RemoveStore(store.GetRootFolder())
-                            time.sleep(0.5)
-                            break
-            except Exception as e:
-                print(f"  ⚠ Could not remove from profile: {e}")
-            
-            # Delete the file
-            try:
-                import os
-                os.remove(pst_path)
-                print("  ✓ Deleted old PST file")
-                time.sleep(0.5)
-            except Exception as e:
-                print(f"  ⚠ Could not delete file: {e}")
+        if pst_path.exists():
+            raise RuntimeError(f"PST file already exists: {pst_path}. Use unique filename to avoid MAPI caching issues.")
         
-        # Add PST to Outlook profile (creates if doesn't exist)
-        print(f"Adding PST to profile: {pst_path}")
+        # Create PST by adding to Outlook profile
+        print(f"Creating new PST: {pst_path}")
         self.namespace.AddStore(str(pst_path))
         
         # Give it time to initialize
         time.sleep(1)
         
-        # Find the store we just added by filepath (not by name!)
+        # Find the store we just created by filepath
         outlook_store = None
         for store in self.namespace.Stores:
             if store.FilePath:
                 if Path(store.FilePath).resolve() == pst_path:
                     outlook_store = store
-                    print(f"✓ PST added: {store.DisplayName}")
+                    print(f"✓ PST created: {store.DisplayName}")
                     break
         
         if not outlook_store:
@@ -525,9 +504,10 @@ def main():
         # Create a test EML for demonstration
         input_path = None
     
-    # Output PST - use a fresh name to avoid permission issues
+    # Output PST - use a unique name with timestamp to avoid reusing stale stores
+    from datetime import datetime as dt
     documents = Path(os.environ.get('USERPROFILE', '')) / 'Documents'
-    pst_path = documents / 'MAPI_Import_Test4.pst'  # New name!
+    pst_path = documents / f'MAPI_Import_{dt.now().strftime("%Y%m%d_%H%M%S")}.pst'
     
     print(f"Output PST: {pst_path}")
     
