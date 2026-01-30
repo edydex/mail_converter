@@ -165,7 +165,7 @@ class MAPIEmlImporter:
         # Give it time to initialize
         time.sleep(1)
         
-        # Find the store we just added
+        # Find the store we just added by filepath (not by name!)
         outlook_store = None
         for store in self.namespace.Stores:
             if store.FilePath:
@@ -177,104 +177,62 @@ class MAPIEmlImporter:
         if not outlook_store:
             raise RuntimeError(f"Could not find PST store: {pst_path}")
         
-        # Now open via MAPI using GetMsgStoresTable (same as working script!)
-        PR_ENTRYID = 0x0FFF0102
-        PR_DISPLAY_NAME_A = 0x3001001E
+        # Use Outlook's StoreID directly (not search by name - there can be duplicates!)
+        pst_eid = bytes.fromhex(outlook_store.StoreID)
+        print(f"  Using Outlook StoreID ({len(pst_eid)} bytes)")
         
-        stores_table = self.session.GetMsgStoresTable(0)
-        stores_table.SetColumns([PR_ENTRYID, PR_DISPLAY_NAME_A], 0)
-        
-        mapi_store = None
-        target_name = outlook_store.DisplayName
-        
-        while True:
-            rows = stores_table.QueryRows(10, 0)
-            if not rows:
-                break
-            for row in rows:
-                store_eid = row[0][1]
-                store_name = row[1][1]
-                if isinstance(store_name, bytes):
-                    store_name = store_name.decode('utf-8', errors='replace')
-                print(f"  Found store: {store_name}")
-                
-                if store_name == target_name:
-                    # Open this store with MAPI
-                    mapi_store = self.session.OpenMsgStore(
-                        0, store_eid, None,
-                        self.mapi.MDB_WRITE | self.mapi.MAPI_BEST_ACCESS
-                    )
-                    print(f"✓ Opened store via MAPI: {store_name}")
-                    break
-            if mapi_store:
-                break
-        
-        if not mapi_store:
-            raise RuntimeError(f"Could not open store via MAPI: {target_name}")
+        mapi_store = self.session.OpenMsgStore(
+            0, pst_eid, None,
+            self.mapi.MDB_WRITE | self.mapi.MAPI_BEST_ACCESS
+        )
+        print(f"✓ Opened store via MAPI")
         
         return mapi_store, outlook_store
     
     def get_or_create_folder(self, mapi_store, outlook_store, folder_name: str):
-        """Get or create a folder in the PST - use folder directly from CreateFolder (like working script)."""
+        """Get or create a folder in the PST - matches working minimal test exactly."""
         
         # Get IPM Subtree - this is where mail folders live
         PR_IPM_SUBTREE_ENTRYID = 0x35E00102
-        PR_ENTRYID = 0x0FFF0102
-        PR_DISPLAY_NAME_A = 0x3001001E
         
-        result = mapi_store.GetProps([PR_IPM_SUBTREE_ENTRYID], 0)
-        print(f"  DEBUG GetProps result: {result}")
+        props = mapi_store.GetProps([PR_IPM_SUBTREE_ENTRYID], 0)
+        print(f"  GetProps returned: {props}")
         
-        # Parse result - format is (status, ((tag, value), ...))
-        root_eid = None
-        if isinstance(result, tuple) and len(result) >= 2:
-            status, props = result[0], result[1]
-            if isinstance(props, tuple):
-                for item in props:
-                    if isinstance(item, tuple) and len(item) >= 2:
-                        tag, value = item[0], item[1]
-                        if isinstance(value, bytes):
-                            root_eid = value
-                            print(f"  ✓ Got IPM Subtree EID from MAPI")
-                            break
+        # Parse - match the format from working test: (status, ((tag, value),))
+        if isinstance(props[0], tuple):
+            root_eid = props[0][1]
+        elif isinstance(props, tuple) and len(props) >= 2:
+            root_eid = props[1][0][1]
+        else:
+            root_eid = props[0]
         
-        if not root_eid:
-            print("  Falling back to Outlook root folder...")
-            root_outlook = outlook_store.GetRootFolder()
-            root_eid = bytes.fromhex(root_outlook.EntryID)
-        
-        print(f"  DEBUG root_eid len: {len(root_eid)}")
+        print(f"  root_eid: {len(root_eid)} bytes")
         
         # Open root folder with full access
         root_folder = mapi_store.OpenEntry(
             root_eid, None, 
             self.mapi.MAPI_MODIFY | self.mapi.MAPI_BEST_ACCESS
         )
+        print(f"✓ Opened root folder")
         
-        # Try to create the subfolder - USE IT DIRECTLY (like working script!)
+        # Create subfolder - use it directly (like working test)
         try:
             folder = root_folder.CreateFolder(1, folder_name, "Imported emails", None, 0)
             print(f"✓ Created folder: {folder_name}")
-            # Use the folder directly - don't re-open!
             return folder
                 
         except Exception as e:
             error_code = getattr(e, 'args', [None])[0] if hasattr(e, 'args') else None
-            # MAPI_E_COLLISION = 0x80040604 = -2147219964
-            is_collision = (
-                error_code == -2147219964 or 
-                "MAPI_E_COLLISION" in str(e) or 
-                "already exists" in str(e).lower() or
-                "0x80040604" in str(e)
-            )
+            is_collision = (error_code == -2147219964)
             
             if is_collision:
-                print(f"  Folder exists, searching via table...")
-                # Folder exists - find it via MAPI table
+                print(f"  Folder exists, finding it...")
+                # Find via hierarchy table
                 table = root_folder.GetHierarchyTable(0)
+                PR_ENTRYID = 0x0FFF0102
+                PR_DISPLAY_NAME_A = 0x3001001E
                 table.SetColumns([PR_ENTRYID, PR_DISPLAY_NAME_A], 0)
                 
-                folder_eid = None
                 while True:
                     rows = table.QueryRows(10, 0)
                     if not rows:
@@ -284,23 +242,15 @@ class MAPIEmlImporter:
                         name = row[1][1]
                         if isinstance(name, bytes):
                             name = name.decode('utf-8', errors='replace')
-                        print(f"    Found folder: {name}")
                         if name == folder_name:
-                            folder_eid = eid
-                            break
-                    if folder_eid:
-                        break
+                            folder = mapi_store.OpenEntry(
+                                eid, None,
+                                self.mapi.MAPI_MODIFY | self.mapi.MAPI_BEST_ACCESS
+                            )
+                            print(f"✓ Opened existing folder: {folder_name}")
+                            return folder
                 
-                if not folder_eid:
-                    raise RuntimeError(f"Could not find existing folder: {folder_name}")
-                
-                # Open existing folder
-                folder = mapi_store.OpenEntry(
-                    folder_eid, None,
-                    self.mapi.MAPI_MODIFY | self.mapi.MAPI_BEST_ACCESS
-                )
-                print(f"✓ Opened existing folder with write access")
-                return folder
+                raise RuntimeError(f"Could not find folder: {folder_name}")
             else:
                 raise
     
@@ -401,58 +351,40 @@ class MAPIEmlImporter:
         try:
             # Create message
             msg = folder.CreateMessage(None, 0)
-            print(f"  DEBUG CreateMessage returned: {type(msg)}")
             
             # Convert date to PyTime
             pytime = self.pywintypes.Time(eml_data['date'])
             
-            # Build properties list - use ANSI tags (001E not 001F)
+            # Build properties list - use mapitags module like working script
             props = [
-                (self.PR_MESSAGE_CLASS_A, "IPM.Note"),
-                (self.PR_SUBJECT_A, eml_data['subject']),
-                (self.PR_MESSAGE_FLAGS, self.MSGFLAG_READ),  # Mark as read, not unsent
-                (self.PR_MESSAGE_DELIVERY_TIME, pytime),
-                (self.PR_CLIENT_SUBMIT_TIME, pytime),
+                (self.mapitags.PR_MESSAGE_CLASS_A, "IPM.Note"),
+                (self.mapitags.PR_SUBJECT_A, eml_data['subject']),
+                (self.mapitags.PR_MESSAGE_FLAGS, 0x0001),  # MSGFLAG_READ
+                (self.mapitags.PR_MESSAGE_DELIVERY_TIME, pytime),
+                (self.mapitags.PR_CLIENT_SUBMIT_TIME, pytime),
             ]
             
             # Sender
             if eml_data['from_email']:
                 props.extend([
-                    (self.PR_SENDER_NAME_A, eml_data['from_name'] or eml_data['from_email']),
-                    (self.PR_SENDER_EMAIL_ADDRESS_A, eml_data['from_email']),
-                    (self.PR_SENT_REPRESENTING_NAME_A, eml_data['from_name'] or eml_data['from_email']),
-                    (self.PR_SENT_REPRESENTING_EMAIL_ADDRESS_A, eml_data['from_email']),
+                    (self.mapitags.PR_SENDER_NAME_A, eml_data['from_name'] or eml_data['from_email']),
+                    (self.mapitags.PR_SENDER_EMAIL_ADDRESS_A, eml_data['from_email']),
+                    (0x0042001E, eml_data['from_name'] or eml_data['from_email']),  # PR_SENT_REPRESENTING_NAME_A
+                    (0x0065001E, eml_data['from_email']),  # PR_SENT_REPRESENTING_EMAIL_ADDRESS_A
                 ])
             
-            # Body - prefer plain text for ANSI compatibility, skip HTML for now
+            # Body
             if eml_data['body_plain']:
-                props.append((self.PR_BODY_A, eml_data['body_plain']))
+                props.append((self.mapitags.PR_BODY_A, eml_data['body_plain']))
             elif eml_data['body_html']:
-                # Strip HTML tags for plain text fallback
                 import re
                 plain = re.sub(r'<[^>]+>', '', eml_data['body_html'])
-                props.append((self.PR_BODY_A, plain))
-            
-            # Display To/CC
-            if eml_data['to']:
-                display_to = '; '.join([f"{n} <{e}>" if n else e for n, e in eml_data['to']])
-                props.append((self.PR_DISPLAY_TO_A, display_to))
-            
-            if eml_data['cc']:
-                display_cc = '; '.join([f"{n} <{e}>" if n else e for n, e in eml_data['cc']])
-                props.append((self.PR_DISPLAY_CC_A, display_cc))
+                props.append((self.mapitags.PR_BODY_A, plain))
             
             # Set properties
             msg.SetProps(props)
             
-            # Add recipients
-            self._add_recipients(msg, eml_data)
-            
-            # Add attachments
-            for att in eml_data['attachments']:
-                self._add_attachment(msg, att)
-            
-            # Save
+            # Save (skip recipients and attachments for now to keep it simple)
             msg.SaveChanges(0)
             
             return True
