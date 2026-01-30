@@ -215,14 +215,14 @@ class MAPIEmlImporter:
         return mapi_store, outlook_store
     
     def get_or_create_folder(self, mapi_store, outlook_store, folder_name: str):
-        """Get or create a folder in the PST using pure MAPI (same as working script)."""
-        import time
+        """Get or create a folder in the PST - use folder directly from CreateFolder (like working script)."""
         
-        # Get IPM Subtree - this is where mail folders live (same as working mapi_pst_create.py)
+        # Get IPM Subtree - this is where mail folders live
         PR_IPM_SUBTREE_ENTRYID = 0x35E00102
         PR_ENTRYID = 0x0FFF0102
-        result = mapi_store.GetProps([PR_IPM_SUBTREE_ENTRYID], 0)
+        PR_DISPLAY_NAME_A = 0x3001001E
         
+        result = mapi_store.GetProps([PR_IPM_SUBTREE_ENTRYID], 0)
         print(f"  DEBUG GetProps result: {result}")
         
         # Parse result - format is (status, ((tag, value), ...))
@@ -251,29 +251,12 @@ class MAPIEmlImporter:
             self.mapi.MAPI_MODIFY | self.mapi.MAPI_BEST_ACCESS
         )
         
-        # Try to create the subfolder
-        folder_eid = None
+        # Try to create the subfolder - USE IT DIRECTLY (like working script!)
         try:
-            new_folder = root_folder.CreateFolder(1, folder_name, "", None, 0)
+            folder = root_folder.CreateFolder(1, folder_name, "Imported emails", None, 0)
             print(f"✓ Created folder: {folder_name}")
-            
-            # Get its entry ID - same format parsing
-            folder_props = new_folder.GetProps([PR_ENTRYID], 0)
-            print(f"  DEBUG folder_props: {folder_props}")
-            
-            if isinstance(folder_props, tuple) and len(folder_props) >= 2:
-                status, props = folder_props[0], folder_props[1]
-                if isinstance(props, tuple):
-                    for item in props:
-                        if isinstance(item, tuple) and len(item) >= 2:
-                            if isinstance(item[1], bytes):
-                                folder_eid = item[1]
-                                break
-            
-            if not folder_eid:
-                # Use the folder directly without re-opening
-                print("✓ Using newly created folder directly")
-                return new_folder
+            # Use the folder directly - don't re-open!
+            return folder
                 
         except Exception as e:
             error_code = getattr(e, 'args', [None])[0] if hasattr(e, 'args') else None
@@ -289,14 +272,18 @@ class MAPIEmlImporter:
                 print(f"  Folder exists, searching via table...")
                 # Folder exists - find it via MAPI table
                 table = root_folder.GetHierarchyTable(0)
-                table.SetColumns([PR_ENTRYID, 0x3001001F], 0)  # PR_ENTRYID, PR_DISPLAY_NAME_W
+                table.SetColumns([PR_ENTRYID, PR_DISPLAY_NAME_A], 0)
                 
+                folder_eid = None
                 while True:
                     rows = table.QueryRows(10, 0)
                     if not rows:
                         break
                     for row in rows:
-                        eid, name = row[0][1], row[1][1]
+                        eid = row[0][1]
+                        name = row[1][1]
+                        if isinstance(name, bytes):
+                            name = name.decode('utf-8', errors='replace')
                         print(f"    Found folder: {name}")
                         if name == folder_name:
                             folder_eid = eid
@@ -306,16 +293,16 @@ class MAPIEmlImporter:
                 
                 if not folder_eid:
                     raise RuntimeError(f"Could not find existing folder: {folder_name}")
+                
+                # Open existing folder
+                folder = mapi_store.OpenEntry(
+                    folder_eid, None,
+                    self.mapi.MAPI_MODIFY | self.mapi.MAPI_BEST_ACCESS
+                )
+                print(f"✓ Opened existing folder with write access")
+                return folder
             else:
                 raise
-        
-        # Re-open folder with full write access
-        folder = mapi_store.OpenEntry(
-            folder_eid, None,
-            self.mapi.MAPI_MODIFY | self.mapi.MAPI_BEST_ACCESS
-        )
-        print(f"✓ Opened folder with write access")
-        return folder
     
     def parse_eml(self, eml_path: str) -> dict:
         """Parse an EML file and extract all components."""
