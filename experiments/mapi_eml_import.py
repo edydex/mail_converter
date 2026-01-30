@@ -527,7 +527,7 @@ def main():
     
     # Output PST - use a fresh name to avoid permission issues
     documents = Path(os.environ.get('USERPROFILE', '')) / 'Documents'
-    pst_path = documents / 'MAPI_Import_Test3.pst'  # New name!
+    pst_path = documents / 'MAPI_Import_Test4.pst'  # New name!
     
     print(f"Output PST: {pst_path}")
     
@@ -545,7 +545,10 @@ def main():
         print("✓ PST ready")
         
         print_section("Step 3: Create Import Folder")
-        folder = importer.get_or_create_folder(mapi_store, outlook_store, "Test Imports")
+        # Always create a NEW folder with unique timestamp - opening existing folders loses write access
+        from datetime import datetime as dt
+        folder_name = f"Import_{dt.now().strftime('%Y%m%d_%H%M%S')}"
+        folder = importer.get_or_create_folder(mapi_store, outlook_store, folder_name)
         print("✓ Folder ready")
         
         print_section("Step 4: Import EMLs")
