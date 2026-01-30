@@ -8,15 +8,11 @@ on:
       - 'main.py'
       - 'core/**'
       - 'gui/**'
+      - 'utils/**'
       - 'build/**'
       - 'requirements.txt'
+      - 'pyproject.toml'
       - '.github/workflows/build.yml'
-    paths-ignore:
-      - 'experiments/**'
-      - '*.md'
-      - 'docs/**'
-      - '.gitignore'
-      - 'LICENSE'
     tags:
       - 'v*'
   workflow_dispatch:
