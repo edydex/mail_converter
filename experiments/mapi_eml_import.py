@@ -331,8 +331,12 @@ class MAPIEmlImporter:
             # Create message
             msg = folder.CreateMessage(None, 0)
             
-            # Convert date to PyTime
-            pytime = self.pywintypes.Time(eml_data['date'])
+            # Convert date to PyTime - MUST be naive datetime (no timezone)
+            email_date = eml_data['date']
+            if hasattr(email_date, 'tzinfo') and email_date.tzinfo is not None:
+                # Remove timezone info - convert to naive datetime
+                email_date = email_date.replace(tzinfo=None)
+            pytime = self.pywintypes.Time(email_date)
             
             # Use ANSI property tags (Unicode causes "Access denied")
             # These match the working mapi_pst_create.py exactly
@@ -357,6 +361,7 @@ class MAPIEmlImporter:
                     result = result[:max_len]
                 return result
             
+            # Start with minimal props that we KNOW work (from diagnostic test)
             props = [
                 (PR_MESSAGE_CLASS_A, "IPM.Note"),
                 (PR_SUBJECT_A, safe_str(eml_data['subject'], 255)),
@@ -374,27 +379,19 @@ class MAPIEmlImporter:
                     (PR_SENT_REP_EMAIL_A, safe_str(eml_data['from_email'])),
                 ])
             
-            # Display To/CC (shows in header)
-            if eml_data['to']:
-                display_to = '; '.join([f"{n} <{e}>" if n else e for n, e in eml_data['to']])
-                props.append((PR_DISPLAY_TO_A, safe_str(display_to)))
+            # Set core properties FIRST (before body/attachments)
+            msg.SetProps(props)
             
-            if eml_data['cc']:
-                display_cc = '; '.join([f"{n} <{e}>" if n else e for n, e in eml_data['cc']])
-                props.append((PR_DISPLAY_CC_A, safe_str(display_cc)))
-            
-            # Body - prefer HTML, fallback to plain
+            # Now add body as separate SetProps call
+            body_props = []
             if eml_data['body_html']:
                 html_bytes = eml_data['body_html'].encode('utf-8')
-                props.append((PR_HTML, html_bytes))
-                # Also set plain text version
-                if eml_data['body_plain']:
-                    props.append((PR_BODY_A, safe_str(eml_data['body_plain'])))
-            elif eml_data['body_plain']:
-                props.append((PR_BODY_A, safe_str(eml_data['body_plain'])))
+                body_props.append((PR_HTML, html_bytes))
+            if eml_data['body_plain']:
+                body_props.append((PR_BODY_A, safe_str(eml_data['body_plain'])))
             
-            # Set properties
-            msg.SetProps(props)
+            if body_props:
+                msg.SetProps(body_props)
             
             # Add recipients
             self._add_recipients(msg, eml_data)
