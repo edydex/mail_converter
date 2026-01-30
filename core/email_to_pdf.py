@@ -87,19 +87,24 @@ class EmailToPDFConverter:
     
     def _url_fetcher(self, url: str):
         """
-        Custom URL fetcher for WeasyPrint that blocks remote URLs for security.
-        Only allows data: URLs (embedded images) and local file: URLs.
+        Custom URL fetcher for WeasyPrint that can block or allow remote URLs.
+        Behavior depends on self.load_remote_images setting.
         """
         if url.startswith('data:'):
-            # Allow data: URLs (base64 embedded images)
+            # Always allow data: URLs (base64 embedded images)
             return WEASYPRINT_DEFAULT_URL_FETCHER(url)
         elif url.startswith('file://'):
-            # Allow local file URLs
+            # Always allow local file URLs
             return WEASYPRINT_DEFAULT_URL_FETCHER(url)
         elif url.startswith(('http://', 'https://')):
-            # Block remote URLs - return empty result
-            logger.debug(f"Blocked remote image: {url[:100]}")
-            return {'string': b'', 'mime_type': 'image/png'}
+            if self.load_remote_images:
+                # Allow remote URLs when enabled
+                logger.debug(f"Fetching remote image: {url[:100]}")
+                return WEASYPRINT_DEFAULT_URL_FETCHER(url)
+            else:
+                # Block remote URLs - return empty result
+                logger.debug(f"Blocked remote image: {url[:100]}")
+                return {'string': b'', 'mime_type': 'image/png'}
         else:
             # For other URLs (relative paths, etc.), try the default fetcher
             try:
@@ -208,12 +213,14 @@ class EmailToPDFConverter:
             css = CSS(string=page_size_css, font_config=font_config)
             
             # Use custom url_fetcher to block remote images if setting is disabled
+            # Enable presentational_hints=True to honor HTML table attributes like
+            # width, cellpadding, cellspacing, bgcolor, align - critical for email HTML
             if self.load_remote_images:
                 html = HTML(string=html_content)
-                html.write_pdf(str(output_path), stylesheets=[css], font_config=font_config)
+                html.write_pdf(str(output_path), stylesheets=[css], font_config=font_config, presentational_hints=True)
             else:
                 html = HTML(string=html_content, url_fetcher=self._url_fetcher)
-                html.write_pdf(str(output_path), stylesheets=[css], font_config=font_config)
+                html.write_pdf(str(output_path), stylesheets=[css], font_config=font_config, presentational_hints=True)
             
             logger.info(f"Created PDF with WeasyPrint: {output_path}")
             return output_path
@@ -308,30 +315,22 @@ class EmailToPDFConverter:
             word-wrap: break-word;
         }}
         
-        /* Force all content to fit within page width */
+        /* Minimal overrides - preserve original email styling as much as possible */
         * {{
-            max-width: 100% !important;
             box-sizing: border-box;
         }}
         
-        /* Tables - constrain to page width but preserve original styling */
+        /* Tables - preserve original layout, just cap max-width */
         table {{
             border-collapse: collapse;
-            max-width: 100% !important;
-            width: auto !important;
-            table-layout: auto;
-            overflow: hidden;
+            max-width: 100%;
         }}
         
-        /* Only add padding to td/th if the table has explicit borders */
-        /* Tables with border="0" or no border are layout tables - don't add padding */
+        /* Table cells - preserve original widths and alignment */
         td, th {{
             vertical-align: top;
             overflow-wrap: break-word;
             word-wrap: break-word;
-            word-break: break-word;
-            overflow: hidden;
-            width: auto !important;
         }}
         
         /* Style tables that explicitly request borders (border > 0) */
@@ -346,15 +345,10 @@ class EmailToPDFConverter:
             padding: 4px 8px;
         }}
         
-        /* Images - respect explicit width/height from email, but cap at page width */
+        /* Images - cap at page width but preserve explicit sizing */
         img {{
             max-width: 100%;
             height: auto;
-        }}
-        
-        /* Images without explicit sizing get a reasonable max */
-        img:not([width]):not([style*="width"]) {{
-            max-width: 300px;
         }}
         
         /* Links */
@@ -713,52 +707,59 @@ class EmailToPDFConverter:
     
     def _strip_fixed_table_widths(self, html_content: str) -> str:
         """
-        Use BeautifulSoup to remove all fixed pixel widths from tables and cells.
-        This ensures text wraps properly on all platforms (especially Windows).
+        Use BeautifulSoup to intelligently handle table widths.
+        
+        Strategy:
+        - Convert large fixed pixel widths (>600px) to 100% to prevent overflow
+        - Keep percentage widths intact (they're responsive)
+        - Keep small pixel widths (for icons, small elements)
+        - Preserve the original layout as much as possible
         """
         try:
             soup = BeautifulSoup(html_content, 'html.parser')
             
-            removed_count = 0
-            # Remove width attribute from tables, td, th, tr, tbody elements
-            for tag in soup.find_all(['table', 'td', 'th', 'tr', 'tbody', 'thead', 'tfoot']):
-                # Remove width attribute entirely
-                if tag.has_attr('width'):
-                    del tag['width']
-                    removed_count += 1
-                
-                # Also strip width from inline styles
-                if tag.has_attr('style'):
-                    style = tag['style']
-                    # Remove width declarations from style
-                    new_style = re.sub(r'width\s*:\s*\d+(?:px)?\s*;?', '', style, flags=re.IGNORECASE)
-                    if new_style != style:
-                        removed_count += 1
-                    if new_style.strip():
-                        tag['style'] = new_style.strip()
-                    else:
-                        del tag['style']
+            modified_count = 0
             
-            # Also handle divs with fixed widths that are used as containers
+            # Only modify tables with widths > 600px (typical email width)
+            for table in soup.find_all('table'):
+                if table.has_attr('width'):
+                    width_val = table['width']
+                    # If it's a pixel width > 600, convert to 100%
+                    if width_val.isdigit() and int(width_val) > 600:
+                        table['width'] = '100%'
+                        modified_count += 1
+                    elif width_val.endswith('px'):
+                        px_val = int(width_val[:-2])
+                        if px_val > 600:
+                            table['width'] = '100%'
+                            modified_count += 1
+                
+                # Handle style attribute
+                if table.has_attr('style'):
+                    style = table['style']
+                    # Only modify large fixed widths in styles
+                    width_match = re.search(r'width\s*:\s*(\d+)px', style, re.IGNORECASE)
+                    if width_match and int(width_match.group(1)) > 600:
+                        style = re.sub(r'width\s*:\s*\d+px', 'width: 100%', style, flags=re.IGNORECASE)
+                        table['style'] = style
+                        modified_count += 1
+            
+            # Handle container divs with very large fixed widths
             for div in soup.find_all('div'):
                 if div.has_attr('style'):
                     style = div['style']
-                    # Only remove large fixed widths (>400px)
                     width_match = re.search(r'width\s*:\s*(\d+)px', style, re.IGNORECASE)
-                    if width_match and int(width_match.group(1)) > 400:
-                        style = re.sub(r'width\s*:\s*\d+px\s*;?', '', style, flags=re.IGNORECASE)
-                        removed_count += 1
-                        if style.strip():
-                            div['style'] = style.strip()
-                        else:
-                            del div['style']
+                    if width_match and int(width_match.group(1)) > 600:
+                        style = re.sub(r'width\s*:\s*\d+px', 'width: 100%', style, flags=re.IGNORECASE)
+                        div['style'] = style
+                        modified_count += 1
             
-            logger.info(f"Stripped {removed_count} fixed width attributes from HTML")
+            if modified_count > 0:
+                logger.info(f"Modified {modified_count} large fixed widths to be responsive")
             return str(soup)
         except Exception as e:
-            logger.warning(f"Failed to strip table widths with BeautifulSoup: {e}")
-            # Fallback to regex approach
-            return self._strip_fixed_table_widths_regex(html_content)
+            logger.warning(f"Failed to process table widths with BeautifulSoup: {e}")
+            return html_content  # Return unchanged on error
     
     def _strip_fixed_table_widths_regex(self, html_content: str) -> str:
         """
