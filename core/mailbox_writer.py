@@ -56,25 +56,25 @@ def is_pst_write_available() -> bool:
         return False
 
 
-def is_redemption_available() -> bool:
+def is_mapi_available() -> bool:
     """
-    Check if Redemption library is available for full PST write support.
+    Check if Extended MAPI is available via pywin32.
     
-    Redemption allows setting SentOn/ReceivedTime which standard Outlook COM cannot do.
+    Extended MAPI allows setting message dates properly.
+    Requires Windows with Outlook installed.
     
     Returns:
-        True if Redemption is available, False otherwise
+        True if Extended MAPI is available, False otherwise
     """
     if sys.platform != 'win32':
         return False
     
     try:
+        from win32com.mapi import mapi, mapitags
         import win32com.client
-        # Try to create Redemption session
-        session = win32com.client.Dispatch("Redemption.RDOSession")
         return True
     except Exception as e:
-        logger.debug(f"Redemption not available: {e}")
+        logger.debug(f"Extended MAPI not available: {e}")
         return False
 
 
@@ -85,7 +85,7 @@ class MailboxWriter:
     Supports:
     - MBOX: Standard format, works everywhere
     - EML Folder: Individual .eml files in a folder
-    - PST: Windows only, requires Outlook (with Redemption for date preservation)
+    - PST: Windows only, requires Outlook (Extended MAPI for date preservation)
     """
     
     def __init__(
@@ -100,7 +100,7 @@ class MailboxWriter:
         """
         self.progress_callback = progress_callback
         self._pst_available = None  # Lazy check
-        self._redemption_available = None  # Lazy check
+        self._mapi_available = None  # Lazy check
     
     def _report_progress(self, current: int, total: int, message: str):
         """Report progress to callback."""
@@ -115,11 +115,11 @@ class MailboxWriter:
         return self._pst_available
     
     @property
-    def redemption_available(self) -> bool:
-        """Check if Redemption library is available for full PST date support."""
-        if self._redemption_available is None:
-            self._redemption_available = is_redemption_available()
-        return self._redemption_available
+    def mapi_available(self) -> bool:
+        """Check if Extended MAPI is available for PST writing with date preservation."""
+        if self._mapi_available is None:
+            self._mapi_available = is_mapi_available()
+        return self._mapi_available
     
     def get_available_formats(self) -> List[OutputFormat]:
         """Get list of available output formats."""
@@ -351,8 +351,7 @@ class MailboxWriter:
         """
         Write emails to PST format (Windows only).
         
-        Uses Redemption if available (preserves dates), 
-        otherwise falls back to Outlook COM (dates may not be preserved).
+        Uses Extended MAPI for date preservation, falls back to Outlook COM.
         """
         result = WriteResult(success=False, output_path=output_path)
         
@@ -360,72 +359,141 @@ class MailboxWriter:
             result.errors.append("PST writing is only available on Windows")
             return result
         
-        # Try Redemption first (it preserves dates properly)
-        if is_redemption_available():
-            return self._write_pst_redemption(eml_paths, output_path, folder_name)
-        else:
-            logger.info("Redemption not available, using standard Outlook COM (dates may not be preserved)")
-            result.warnings.append(
-                "Redemption library not installed - email dates may show as today's date. "
-                "Install Redemption from dimastr.com/redemption for proper date preservation."
-            )
-            return self._write_pst_outlook(eml_paths, output_path, folder_name)
+        # Use Extended MAPI (preserves dates, requires Outlook running)
+        if is_mapi_available():
+            logger.info("Using Extended MAPI for PST writing (preserves dates)")
+            return self._write_pst_mapi(eml_paths, output_path, folder_name)
+        
+        # Fall back to Outlook COM (dates not preserved)
+        logger.info("MAPI not available, using standard Outlook COM (dates may not be preserved)")
+        result.warnings.append(
+            "Extended MAPI not available - email dates may show as today's date. "
+            "Ensure Outlook is running for proper date preservation."
+        )
+        return self._write_pst_outlook(eml_paths, output_path, folder_name)
     
-    def _write_pst_redemption(
+    def _write_pst_mapi(
         self, 
         eml_paths: List[str], 
         output_path: str,
         folder_name: str = "Emails"
     ) -> WriteResult:
         """
-        Write emails to PST using Redemption library.
+        Write emails to PST using Extended MAPI via pywin32.
         
-        Redemption allows setting SentOn and ReceivedTime properly,
-        which is not possible with standard Outlook COM.
+        This method properly preserves sent/received dates using Extended MAPI.
+        Requires Outlook to be running.
         """
         result = WriteResult(success=False, output_path=output_path)
         
         try:
+            from win32com.mapi import mapi, mapitags
             import win32com.client
             import pythoncom
+            import pywintypes
             from email import message_from_bytes, policy as email_policy
-            from email.utils import parsedate_to_datetime
+            from email.utils import parsedate_to_datetime, getaddresses
+            import time
             
             # Initialize COM
             pythoncom.CoInitialize()
             
             try:
-                # Create Redemption session
-                session = win32com.client.Dispatch("Redemption.RDOSession")
+                # Initialize MAPI
+                mapi.MAPIInitialize((mapi.MAPI_INIT_VERSION, mapi.MAPI_MULTITHREAD_NOTIFICATIONS))
                 
-                # Connect to Outlook's MAPI session
+                # Connect to Outlook
                 outlook = win32com.client.Dispatch("Outlook.Application")
-                session.MAPIOBJECT = outlook.Session.MAPIOBJECT
+                namespace = outlook.GetNamespace("MAPI")
                 
-                # Create new PST file
-                pst_path = os.path.abspath(output_path)
+                # Get MAPI session
+                session = mapi.MAPILogonEx(0, "", None, mapi.MAPI_EXTENDED | mapi.MAPI_USE_DEFAULT)
                 
-                # Ensure directory exists
-                Path(pst_path).parent.mkdir(parents=True, exist_ok=True)
+                # Create PST file path
+                pst_path = Path(output_path).resolve()
+                pst_path.parent.mkdir(parents=True, exist_ok=True)
                 
                 # Remove existing file if present
-                if os.path.exists(pst_path):
-                    os.remove(pst_path)
+                if pst_path.exists():
+                    os.remove(str(pst_path))
                 
-                # Create PST store
-                pst_store = session.Stores.AddPSTStore(pst_path)
+                # Add PST to Outlook profile (creates the file)
+                namespace.AddStore(str(pst_path))
+                time.sleep(1)  # Let it initialize
                 
-                # Get root folder and create target folder
-                root_folder = pst_store.RootFolder
+                # Find the PST store we just created
+                outlook_store = None
+                for store in namespace.Stores:
+                    if store.FilePath:
+                        if Path(store.FilePath).resolve() == pst_path:
+                            outlook_store = store
+                            break
                 
+                if not outlook_store:
+                    result.errors.append(f"Could not find PST store after creation: {pst_path}")
+                    return result
+                
+                # Open store via MAPI using Outlook's StoreID
+                pst_eid = bytes.fromhex(outlook_store.StoreID)
+                mapi_store = session.OpenMsgStore(0, pst_eid, None, mapi.MDB_WRITE | mapi.MAPI_BEST_ACCESS)
+                
+                # Get IPM Subtree (root folder for mail)
+                PR_IPM_SUBTREE_ENTRYID = 0x35E00102
+                props = mapi_store.GetProps([PR_IPM_SUBTREE_ENTRYID], 0)
+                
+                if isinstance(props[0], tuple):
+                    root_eid = props[0][1]
+                elif isinstance(props, tuple) and len(props) >= 2:
+                    root_eid = props[1][0][1]
+                else:
+                    root_eid = props[0]
+                
+                root_folder = mapi_store.OpenEntry(root_eid, None, mapi.MAPI_MODIFY | mapi.MAPI_BEST_ACCESS)
+                
+                # Create target folder
                 try:
-                    target_folder = root_folder.Folders.Add(folder_name)
-                except:
-                    # Folder might already exist
-                    try:
-                        target_folder = root_folder.Folders(folder_name)
-                    except:
-                        target_folder = root_folder
+                    target_folder = root_folder.CreateFolder(1, folder_name, "Imported emails", None, 0)
+                except Exception as e:
+                    # Folder might exist, try to find it
+                    table = root_folder.GetHierarchyTable(0)
+                    table.SetColumns([0x0FFF0102, 0x3001001E], 0)  # PR_ENTRYID, PR_DISPLAY_NAME_A
+                    rows = table.QueryRows(100, 0)
+                    
+                    target_folder = None
+                    for row in rows:
+                        fname = row[1][1]
+                        if isinstance(fname, bytes):
+                            fname = fname.decode('utf-8', errors='replace')
+                        if fname == folder_name:
+                            feid = row[0][1]
+                            target_folder = mapi_store.OpenEntry(feid, None, mapi.MAPI_MODIFY | mapi.MAPI_BEST_ACCESS)
+                            break
+                    
+                    if not target_folder:
+                        raise RuntimeError(f"Could not create or find folder: {folder_name}")
+                
+                # Property tags for messages
+                PR_MESSAGE_CLASS_A = mapitags.PR_MESSAGE_CLASS_A
+                PR_SUBJECT_A = mapitags.PR_SUBJECT_A
+                PR_BODY_A = mapitags.PR_BODY_A
+                PR_HTML = 0x10130102
+                PR_MESSAGE_FLAGS = mapitags.PR_MESSAGE_FLAGS
+                PR_MESSAGE_DELIVERY_TIME = mapitags.PR_MESSAGE_DELIVERY_TIME
+                PR_CLIENT_SUBMIT_TIME = mapitags.PR_CLIENT_SUBMIT_TIME
+                PR_SENDER_NAME_A = mapitags.PR_SENDER_NAME_A
+                PR_SENDER_EMAIL_A = mapitags.PR_SENDER_EMAIL_ADDRESS_A
+                PR_SENT_REP_NAME_A = 0x0042001E
+                PR_SENT_REP_EMAIL_A = 0x0065001E
+                MSGFLAG_READ = 0x0001
+                
+                # Helper for ANSI string encoding
+                def safe_ansi(s, max_len=None):
+                    if not s:
+                        return ""
+                    result = s.encode('latin-1', errors='replace').decode('latin-1')
+                    if max_len:
+                        result = result[:max_len]
+                    return result
                 
                 # Import each email
                 total = len(eml_paths)
@@ -435,65 +503,100 @@ class MailboxWriter:
                     try:
                         self._report_progress(i + 1, total, f"Importing {i+1}/{total}")
                         
-                        # Parse the email file with Python's email module
+                        # Parse the email
                         with open(eml_path, 'rb') as f:
                             msg = message_from_bytes(f.read(), policy=email_policy.default)
                         
-                        # Create new message in "sent" state
-                        # CRITICAL: Set Sent=True BEFORE first save to allow date setting
-                        mail_item = target_folder.Items.Add("IPM.Note")
-                        mail_item.Sent = True
-                        
-                        # Set subject
-                        mail_item.Subject = msg.get('Subject', '(No Subject)') or '(No Subject)'
-                        
-                        # Set sender
-                        sender = msg.get('From', '')
-                        if sender:
-                            try:
-                                mail_item.SentOnBehalfOfName = sender
-                            except:
-                                pass
-                        
-                        # Set recipients
-                        to_addrs = msg.get('To', '')
-                        cc_addrs = msg.get('Cc', '')
-                        
-                        if to_addrs:
-                            try:
-                                mail_item.To = to_addrs
-                            except:
-                                pass
-                        if cc_addrs:
-                            try:
-                                mail_item.CC = cc_addrs
-                            except:
-                                pass
-                        
-                        # Set body
-                        body = msg.get_body(preferencelist=('html', 'plain'))
-                        if body:
-                            try:
-                                content = body.get_content()
-                                if body.get_content_type() == 'text/html':
-                                    mail_item.HTMLBody = content
-                                else:
-                                    mail_item.Body = content
-                            except Exception as e:
-                                logger.debug(f"Could not set body: {e}")
-                        
-                        # SET DATES - This is why we use Redemption!
+                        # Get email properties
+                        subject = msg.get('Subject', '(No Subject)') or '(No Subject)'
+                        from_header = msg.get('From', '')
                         date_str = msg.get('Date', '')
+                        
+                        # Parse sender
+                        from_name = ''
+                        from_email = from_header
+                        addrs = getaddresses([from_header])
+                        if addrs:
+                            from_name, from_email = addrs[0]
+                        
+                        # Parse date - MUST be naive datetime for pywintypes
+                        email_date = None
                         if date_str:
                             try:
-                                dt = parsedate_to_datetime(date_str)
-                                mail_item.SentOn = dt
-                                mail_item.ReceivedTime = dt
-                            except Exception as e:
-                                logger.debug(f"Could not set date: {e}")
+                                email_date = parsedate_to_datetime(date_str)
+                                if email_date.tzinfo is not None:
+                                    email_date = email_date.replace(tzinfo=None)
+                            except:
+                                pass
+                        
+                        if not email_date:
+                            from datetime import datetime
+                            email_date = datetime.now()
+                        
+                        # Get body
+                        body_plain = ''
+                        body_html = ''
+                        if msg.is_multipart():
+                            for part in msg.walk():
+                                ct = part.get_content_type()
+                                if ct == 'text/plain' and not body_plain:
+                                    try:
+                                        body_plain = part.get_content()
+                                    except:
+                                        pass
+                                elif ct == 'text/html' and not body_html:
+                                    try:
+                                        body_html = part.get_content()
+                                    except:
+                                        pass
+                        else:
+                            ct = msg.get_content_type()
+                            try:
+                                content = msg.get_content()
+                                if ct == 'text/html':
+                                    body_html = content
+                                else:
+                                    body_plain = content
+                            except:
+                                pass
+                        
+                        # Create message
+                        mail = target_folder.CreateMessage(None, 0)
+                        
+                        # Convert date to PyTime
+                        pytime = pywintypes.Time(email_date)
+                        
+                        # Set core properties
+                        props = [
+                            (PR_MESSAGE_CLASS_A, "IPM.Note"),
+                            (PR_SUBJECT_A, safe_ansi(subject, 255)),
+                            (PR_MESSAGE_FLAGS, MSGFLAG_READ),
+                            (PR_MESSAGE_DELIVERY_TIME, pytime),
+                            (PR_CLIENT_SUBMIT_TIME, pytime),
+                        ]
+                        
+                        if from_email:
+                            props.extend([
+                                (PR_SENDER_NAME_A, safe_ansi(from_name or from_email)),
+                                (PR_SENDER_EMAIL_A, safe_ansi(from_email)),
+                                (PR_SENT_REP_NAME_A, safe_ansi(from_name or from_email)),
+                                (PR_SENT_REP_EMAIL_A, safe_ansi(from_email)),
+                            ])
+                        
+                        mail.SetProps(props)
+                        
+                        # Set body separately
+                        body_props = []
+                        if body_html:
+                            body_props.append((PR_HTML, body_html.encode('utf-8')))
+                        if body_plain:
+                            body_props.append((PR_BODY_A, safe_ansi(body_plain)))
+                        
+                        if body_props:
+                            mail.SetProps(body_props)
                         
                         # Save the message
-                        mail_item.Save()
+                        mail.SaveChanges(0)
                         
                         result.emails_written += 1
                         imported_count += 1
@@ -501,29 +604,27 @@ class MailboxWriter:
                     except Exception as e:
                         if len(result.warnings) < 10:
                             result.warnings.append(f"Failed to import email {i+1}: {str(e)[:100]}")
-                        logger.warning(f"Failed to import {eml_path} to PST: {e}")
+                        logger.warning(f"Failed to import {eml_path} to PST via MAPI: {e}")
                 
-                logger.info(f"Successfully imported {imported_count}/{total} emails to PST using Redemption")
+                logger.info(f"Successfully imported {imported_count}/{total} emails to PST using Extended MAPI")
                 
                 if imported_count == 0 and total > 0:
                     result.errors.append(
                         f"Failed to import any emails. Try using MBOX or EML Folder output format instead."
                     )
                 
-                # Detach the PST store (keeps the file)
-                try:
-                    session.Stores.RemoveStore(pst_store)
-                except:
-                    pass
-                
                 result.success = imported_count > 0
                 
             finally:
+                try:
+                    mapi.MAPIUninitialize()
+                except:
+                    pass
                 pythoncom.CoUninitialize()
         
         except Exception as e:
-            result.errors.append(f"PST write with Redemption failed: {e}")
-            logger.error(f"PST write with Redemption failed: {e}")
+            result.errors.append(f"PST write with Extended MAPI failed: {e}")
+            logger.error(f"PST write with Extended MAPI failed: {e}")
         
         return result
     
