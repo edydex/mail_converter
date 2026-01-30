@@ -363,6 +363,9 @@ class MAPIEmlImporter:
             PR_SENDER_EMAIL_ADDRESS_W = 0x0C1F001F
             PR_SENT_REPRESENTING_NAME_W = 0x0042001F
             PR_SENT_REPRESENTING_EMAIL_W = 0x0065001F
+            PR_DISPLAY_TO_W = 0x0E04001F
+            PR_DISPLAY_CC_W = 0x0E03001F
+            PR_HTML = 0x10130102  # Binary
             
             props = [
                 (PR_MESSAGE_CLASS_W, "IPM.Note"),
@@ -381,16 +384,34 @@ class MAPIEmlImporter:
                     (PR_SENT_REPRESENTING_EMAIL_W, eml_data['from_email']),
                 ])
             
-            # Body
-            if eml_data['body_plain']:
+            # Display To/CC (shows in header)
+            if eml_data['to']:
+                display_to = '; '.join([f"{n} <{e}>" if n else e for n, e in eml_data['to']])
+                props.append((PR_DISPLAY_TO_W, display_to))
+            
+            if eml_data['cc']:
+                display_cc = '; '.join([f"{n} <{e}>" if n else e for n, e in eml_data['cc']])
+                props.append((PR_DISPLAY_CC_W, display_cc))
+            
+            # Body - prefer HTML, fallback to plain
+            if eml_data['body_html']:
+                html_bytes = eml_data['body_html'].encode('utf-8')
+                props.append((PR_HTML, html_bytes))
+                # Also set plain text version
+                if eml_data['body_plain']:
+                    props.append((PR_BODY_W, eml_data['body_plain']))
+            elif eml_data['body_plain']:
                 props.append((PR_BODY_W, eml_data['body_plain']))
-            elif eml_data['body_html']:
-                import re
-                plain = re.sub(r'<[^>]+>', '', eml_data['body_html'])
-                props.append((PR_BODY_W, plain))
             
             # Set properties
             msg.SetProps(props)
+            
+            # Add recipients
+            self._add_recipients(msg, eml_data)
+            
+            # Add attachments
+            for att in eml_data['attachments']:
+                self._add_attachment(msg, att)
             
             # Save
             msg.SaveChanges(0)
@@ -405,19 +426,23 @@ class MAPIEmlImporter:
     
     def _add_recipients(self, msg, eml_data: dict):
         """Add recipients to the message."""
-        # Use ANSI property tags
+        # Recipient property tags (use Unicode for names)
         PR_RECIPIENT_TYPE = 0x0C150003
-        PR_DISPLAY_NAME_A = 0x3001001E
-        PR_EMAIL_ADDRESS_A = 0x3003001E
-        PR_ADDRTYPE_A = 0x3002001E
-        PR_ENTRYID = 0x0FFF0102
+        PR_DISPLAY_NAME_W = 0x3001001F
+        PR_EMAIL_ADDRESS_W = 0x3003001F
+        PR_ADDRTYPE_W = 0x3002001F
+        PR_SMTP_ADDRESS_W = 0x39FE001F
+        
+        MAPI_TO = 1
+        MAPI_CC = 2
+        MAPI_BCC = 3
         
         recipients = []
         
         for recip_type, recip_list in [
-            (self.MAPI_TO, eml_data['to']),
-            (self.MAPI_CC, eml_data['cc']),
-            (self.MAPI_BCC, eml_data['bcc']),
+            (MAPI_TO, eml_data['to']),
+            (MAPI_CC, eml_data['cc']),
+            (MAPI_BCC, eml_data['bcc']),
         ]:
             for name, email in recip_list:
                 recipients.append({
@@ -431,19 +456,19 @@ class MAPIEmlImporter:
         
         try:
             # Build ADRLIST structure
-            # Each recipient is a row with properties
             adrlist = []
             for recip in recipients:
                 row = [
                     (PR_RECIPIENT_TYPE, recip['type']),
-                    (PR_DISPLAY_NAME_A, recip['name']),
-                    (PR_EMAIL_ADDRESS_A, recip['email']),
-                    (PR_ADDRTYPE_A, "SMTP"),
+                    (PR_DISPLAY_NAME_W, recip['name']),
+                    (PR_EMAIL_ADDRESS_W, recip['email']),
+                    (PR_ADDRTYPE_W, "SMTP"),
+                    (PR_SMTP_ADDRESS_W, recip['email']),
                 ]
                 adrlist.append(row)
             
             # ModifyRecipients(flags, adrlist)
-            # flags: MODRECIP_ADD = 2
+            # MODRECIP_ADD = 2
             msg.ModifyRecipients(2, adrlist)
             
         except Exception as e:
@@ -452,13 +477,13 @@ class MAPIEmlImporter:
     
     def _add_attachment(self, msg, attachment: dict):
         """Add an attachment to the message."""
-        # Use ANSI tags
+        # Use Unicode tags for filenames
         PR_ATTACH_METHOD = 0x37050003
-        PR_ATTACH_FILENAME_A = 0x3704001E
-        PR_ATTACH_LONG_FILENAME_A = 0x3707001E
+        PR_ATTACH_FILENAME_W = 0x3704001F
+        PR_ATTACH_LONG_FILENAME_W = 0x3707001F
         PR_ATTACH_DATA_BIN = 0x37010102
-        PR_ATTACH_MIME_TAG_A = 0x370E001E
-        PR_DISPLAY_NAME_A = 0x3001001E
+        PR_ATTACH_MIME_TAG_W = 0x370E001F
+        PR_DISPLAY_NAME_W = 0x3001001F
         
         ATTACH_BY_VALUE = 1
         
@@ -466,16 +491,18 @@ class MAPIEmlImporter:
             # Create attachment
             attach_num, attach = msg.CreateAttach(None, 0)
             
+            filename = attachment['filename'] or 'attachment'
+            
             props = [
                 (PR_ATTACH_METHOD, ATTACH_BY_VALUE),
-                (PR_ATTACH_FILENAME_A, attachment['filename'][:255]),
-                (PR_ATTACH_LONG_FILENAME_A, attachment['filename']),
+                (PR_ATTACH_FILENAME_W, filename[:255]),
+                (PR_ATTACH_LONG_FILENAME_W, filename),
                 (PR_ATTACH_DATA_BIN, attachment['data']),
-                (PR_DISPLAY_NAME_A, attachment['filename']),
+                (PR_DISPLAY_NAME_W, filename),
             ]
             
             if attachment.get('content_type'):
-                props.append((PR_ATTACH_MIME_TAG_A, attachment['content_type']))
+                props.append((PR_ATTACH_MIME_TAG_W, attachment['content_type']))
             
             attach.SetProps(props)
             attach.SaveChanges(0)
