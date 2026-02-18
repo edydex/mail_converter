@@ -347,9 +347,15 @@ class EMLParser:
                         attachment = self._extract_attachment(part)
                         if attachment:
                             attachments.append(attachment)
+                            # If this attachment has a Content-ID, also register
+                            # it as an inline image so cid: references in the
+                            # HTML body can be resolved.
+                            if content_id and content_type.startswith("image/"):
+                                attachment.content_id = content_id
+                                inline_images[content_id] = attachment
                     
                     elif content_type.startswith("image/") and content_id:
-                        # Inline image
+                        # Inline image (without filename / disposition)
                         attachment = self._extract_attachment(part)
                         if attachment:
                             attachment.content_id = content_id
@@ -386,6 +392,15 @@ class EMLParser:
             body_plain, body_html, attachments = self._try_extract_rtf_body(
                 attachments
             )
+            # After RTF extraction we may have HTML with cid: image refs.
+            # Scan attachments for images with content_ids and register
+            # them as inline images so the cid: URLs can be resolved.
+            if body_html:
+                for att in attachments:
+                    cid = getattr(att, 'content_id', None) or ''
+                    if cid and att.content_type.startswith('image/'):
+                        if cid not in inline_images:
+                            inline_images[cid] = att
         
         return body_plain, body_html, attachments, inline_images
     

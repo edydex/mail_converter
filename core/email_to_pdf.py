@@ -240,7 +240,10 @@ class EmailToPDFConverter:
         # Sanitize the email body HTML to remove conflicting styles
         body_html = self._sanitize_email_html(body_html)
         
-        body_html = self._embed_inline_images(body_html, email_data.inline_images)
+        body_html = self._embed_inline_images(
+            body_html, email_data.inline_images,
+            attachments=getattr(email_data, 'attachments', None)
+        )
         
         # Build header section
         header_html = ""
@@ -604,14 +607,36 @@ class EmailToPDFConverter:
         - <link> tags (external stylesheets)
         - CSS pseudo-element content that renders as dots/icons
         - <head> section content
-        - Windows-1252 control characters that render as dots
         - Decorative timeline/bullet div elements that don't contain text
+        
+        NOTE: We intentionally do NOT run _fix_encoding_issues() here.
+        That method aggressively replaces smart quotes, em-dashes, bullets
+        etc. with ASCII equivalents, which degrades HTML rendered by
+        WeasyPrint (which handles Unicode perfectly).  The encoding fixer
+        is only used for the reportlab plain-text fallback path.
         """
         if not html_content:
             return ""
         
-        # First, normalize the text encoding
-        html_content = self._fix_encoding_issues(html_content)
+        # Only fix truly broken encoding (control chars in 0x80-0x9F range
+        # that indicate raw Windows-1252 bytes decoded as Latin-1).
+        # These are actual junk characters, not valid Unicode punctuation.
+        _WIN1252_CTRL_CHARS = {
+            '\x85': '\u2026',  # ellipsis
+            '\x91': '\u2018',  # left single quote
+            '\x92': '\u2019',  # right single quote
+            '\x93': '\u201c',  # left double quote
+            '\x94': '\u201d',  # right double quote
+            '\x95': '\u2022',  # bullet
+            '\x96': '\u2013',  # en dash
+            '\x97': '\u2014',  # em dash
+            '\x99': '\u2122',  # trademark
+        }
+        for bad, good in _WIN1252_CTRL_CHARS.items():
+            html_content = html_content.replace(bad, good)
+        
+        # Remove non-printable control characters (except CR/LF/TAB/NBSP)
+        html_content = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', html_content)
         
         # Remove decorative timeline divs (empty divs with border-radius that render as dots)
         # These are typically: <div style="...border-radius:10px..."></div>
@@ -630,11 +655,39 @@ class EmailToPDFConverter:
             flags=re.IGNORECASE
         )
         
-        # Remove entire <head> section if present
+        # Extract <style> blocks from <head> before removing <head>.
+        # Email CSS classes (e.g. Outlook's .MsoNormal, font definitions)
+        # are needed for correct rendering of bold, spacing, etc.
+        preserved_styles = []
+        head_match = re.search(r'<head[^>]*>(.*?)</head>', html_content, flags=re.DOTALL | re.IGNORECASE)
+        if head_match:
+            head_content = head_match.group(1)
+            for style_m in re.finditer(r'<style[^>]*>(.*?)</style>', head_content, flags=re.DOTALL | re.IGNORECASE):
+                css = style_m.group(1).strip()
+                if css:
+                    # Remove @page rules (conflict with our page layout)
+                    css = re.sub(r'@page\s*\{[^}]*\}', '', css, flags=re.IGNORECASE)
+                    # Remove body/html selectors that set margins/fonts
+                    # (our wrapper already sets those)
+                    css = re.sub(r'(?:html|body)\s*\{[^}]*\}', '', css, flags=re.IGNORECASE)
+                    css = css.strip()
+                    if css:
+                        preserved_styles.append(css)
+        
+        # Remove entire <head> section
         html_content = re.sub(r'<head[^>]*>.*?</head>', '', html_content, flags=re.DOTALL | re.IGNORECASE)
         
-        # Remove all <style> tags and their content
-        html_content = re.sub(r'<style[^>]*>.*?</style>', '', html_content, flags=re.DOTALL | re.IGNORECASE)
+        # Remove any remaining <style> blocks outside <head> — these are
+        # typically in the body already and should be kept. Only remove
+        # <style> if we already captured equivalent styles from <head>.
+        # Actually, keep body-level <style> blocks too (they may define
+        # classes used by the email markup).
+        # html_content = re.sub(r'<style[^>]*>.*?</style>', '', html_content, flags=re.DOTALL | re.IGNORECASE)
+        
+        # Prepend preserved styles so class definitions are available
+        if preserved_styles:
+            style_block = '<style type="text/css">' + '\\n'.join(preserved_styles) + '</style>'
+            html_content = style_block + html_content
         
         # Remove <link> tags (external CSS)
         html_content = re.sub(r'<link[^>]*>', '', html_content, flags=re.IGNORECASE)
@@ -660,21 +713,44 @@ class EmailToPDFConverter:
         
         return html_content.strip()
     
-    def _embed_inline_images(self, html_content: str, inline_images: Dict) -> str:
+    def _embed_inline_images(self, html_content: str, inline_images: Dict, attachments: list = None) -> str:
         """
         Replace cid: references with base64 embedded images.
         Also processes images and strips fixed widths to fit page.
+        
+        Args:
+            html_content: HTML string potentially containing cid: image references
+            inline_images: Dict of content_id -> Attachment for known inline images
+            attachments: Optional list of all attachments to search for CID matches
         """
         # Always strip fixed widths from tables to prevent overflow
         html_content = self._strip_fixed_table_widths(html_content)
         
-        if not inline_images:
+        # Build a combined lookup: start with inline_images, supplement
+        # with any attachments that have a content_id and are images.
+        cid_lookup = dict(inline_images) if inline_images else {}
+        if attachments:
+            for att in attachments:
+                cid = getattr(att, 'content_id', None) or ''
+                if cid and cid not in cid_lookup:
+                    ct = getattr(att, 'content_type', '') or ''
+                    if ct.startswith('image/'):
+                        cid_lookup[cid] = att
+        
+        if not cid_lookup:
             return self._constrain_images_without_dimensions(html_content)
         
         def replace_cid(match):
             cid = match.group(1)
-            # Try with and without angle brackets
-            attachment = inline_images.get(cid) or inline_images.get(f"<{cid}>")
+            # Try exact match, with angle brackets, and filename-only match
+            attachment = cid_lookup.get(cid) or cid_lookup.get(f"<{cid}>")
+            # Also try matching just the filename part before @
+            if not attachment and '@' in cid:
+                short_cid = cid.split('@')[0]
+                for k, v in cid_lookup.items():
+                    if k.split('@')[0] == short_cid:
+                        attachment = v
+                        break
             
             if attachment and attachment.content:
                 try:
