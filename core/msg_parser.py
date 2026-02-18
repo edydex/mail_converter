@@ -15,6 +15,13 @@ import re
 
 logger = logging.getLogger(__name__)
 
+# Try to import RTF converter for RTF-only emails
+try:
+    from .rtf_converter import convert_rtf_body
+    RTF_CONVERTER_AVAILABLE = True
+except ImportError:
+    RTF_CONVERTER_AVAILABLE = False
+
 # Try to import extract_msg
 MSG_AVAILABLE = False
 try:
@@ -149,6 +156,34 @@ class MSGParser:
                     body_html = body_html.decode('utf-8', errors='replace')
                 except Exception:
                     body_html = ""
+            
+            # If both text and HTML bodies are empty, try RTF body
+            # Many Outlook emails store the body only in RTF format
+            if not body_text.strip() and not body_html.strip():
+                if RTF_CONVERTER_AVAILABLE:
+                    rtf_data = None
+                    try:
+                        if hasattr(msg, 'rtfBody') and msg.rtfBody:
+                            rtf_data = msg.rtfBody
+                        elif hasattr(msg, 'compressedRtf') and msg.compressedRtf:
+                            # Some versions expose compressed RTF
+                            rtf_data = msg.compressedRtf
+                    except Exception as e:
+                        logger.debug(f"Could not access RTF body: {e}")
+                    
+                    if rtf_data:
+                        if isinstance(rtf_data, str):
+                            rtf_data = rtf_data.encode('utf-8')
+                        try:
+                            rtf_plain, rtf_html = convert_rtf_body(rtf_data)
+                            if rtf_html:
+                                body_html = rtf_html
+                                logger.info("Extracted HTML from MSG RTF body")
+                            if rtf_plain:
+                                body_text = rtf_plain
+                                logger.info("Extracted text from MSG RTF body")
+                        except Exception as e:
+                            logger.warning(f"Failed to extract RTF body: {e}")
             
             # Get attachments
             attachments = []
@@ -321,18 +356,45 @@ class MSGParser:
                     email_msg['Date'] = formatdate(localtime=True)
             
             # Add body
+            html_body_str = ""
+            plain_body_str = msg.body or ""
+            
             if msg.htmlBody:
+                html_body_str = msg.htmlBody
+                if isinstance(html_body_str, bytes):
+                    html_body_str = html_body_str.decode('utf-8', errors='replace')
+            
+            # If both bodies are empty, try extracting from RTF
+            if not plain_body_str.strip() and not html_body_str.strip():
+                if RTF_CONVERTER_AVAILABLE:
+                    rtf_data = None
+                    try:
+                        if hasattr(msg, 'rtfBody') and msg.rtfBody:
+                            rtf_data = msg.rtfBody
+                    except Exception:
+                        pass
+                    
+                    if rtf_data:
+                        if isinstance(rtf_data, str):
+                            rtf_data = rtf_data.encode('utf-8')
+                        try:
+                            rtf_plain, rtf_html = convert_rtf_body(rtf_data)
+                            if rtf_html:
+                                html_body_str = rtf_html
+                            if rtf_plain:
+                                plain_body_str = rtf_plain
+                        except Exception as e:
+                            logger.warning(f"RTF body extraction failed in convert_to_eml: {e}")
+            
+            if html_body_str:
                 # Create alternative part for text and HTML
                 alt_part = MIMEMultipart('alternative')
-                if msg.body:
-                    alt_part.attach(MIMEText(msg.body, 'plain', 'utf-8'))
-                html_body = msg.htmlBody
-                if isinstance(html_body, bytes):
-                    html_body = html_body.decode('utf-8', errors='replace')
-                alt_part.attach(MIMEText(html_body, 'html', 'utf-8'))
+                if plain_body_str:
+                    alt_part.attach(MIMEText(plain_body_str, 'plain', 'utf-8'))
+                alt_part.attach(MIMEText(html_body_str, 'html', 'utf-8'))
                 email_msg.attach(alt_part)
-            elif msg.body:
-                email_msg.attach(MIMEText(msg.body, 'plain', 'utf-8'))
+            elif plain_body_str:
+                email_msg.attach(MIMEText(plain_body_str, 'plain', 'utf-8'))
             
             # Add attachments
             if msg.attachments:

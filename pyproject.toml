@@ -43,6 +43,7 @@ dependencies = [
     "pdf2image>=1.16.3",
     "img2pdf>=0.5.1",
     "extract-msg>=0.45.0",
+    "striprtf>=0.0.26",
     "pdfkit>=1.0.0",
     "pytz>=2023.3",
     "python-dateutil>=2.8.2",

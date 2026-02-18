@@ -18,6 +18,7 @@ img2pdf>=0.5.1
 
 # Email Processing
 extract-msg>=0.45.0
+striprtf>=0.0.26
 
 # HTML to PDF
 weasyprint>=60.0

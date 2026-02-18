@@ -18,6 +18,8 @@ from typing import Optional, List, Dict, Any, Tuple, BinaryIO
 from dataclasses import dataclass, field
 import logging
 
+from .rtf_converter import convert_rtf_body
+
 logger = logging.getLogger(__name__)
 
 
@@ -378,7 +380,77 @@ class EMLParser:
             except Exception as e:
                 logger.warning(f"Error extracting body: {e}")
         
+        # If both body_plain and body_html are empty, check for RTF body
+        # readpst stores RTF-only bodies as an attachment named "rtf-body.rtf"
+        if not body_plain.strip() and not body_html.strip():
+            body_plain, body_html, attachments = self._try_extract_rtf_body(
+                attachments
+            )
+        
         return body_plain, body_html, attachments, inline_images
+    
+    def _try_extract_rtf_body(
+        self,
+        attachments: List[Attachment]
+    ) -> Tuple[str, str, List[Attachment]]:
+        """
+        Check if an RTF body attachment exists and extract content from it.
+        
+        When readpst extracts emails from PST files where the body is stored
+        in RTF format only, it saves the RTF body as an attachment called
+        "rtf-body.rtf". This method detects that attachment, extracts
+        text/HTML from it, and removes it from the attachment list.
+        
+        Returns:
+            Tuple of (plain_text, html, filtered_attachments)
+        """
+        body_plain = ""
+        body_html = ""
+        remaining_attachments = []
+        rtf_found = False
+        
+        for att in attachments:
+            # Check for RTF body attachment (created by readpst)
+            is_rtf_body = (
+                att.filename and 
+                att.filename.lower() == 'rtf-body.rtf' and
+                att.content
+            )
+            # Also check for application/rtf content type without a real filename
+            if not is_rtf_body:
+                is_rtf_body = (
+                    att.content_type == 'application/rtf' and
+                    att.filename and
+                    'rtf-body' in att.filename.lower() and
+                    att.content
+                )
+            
+            if is_rtf_body and not rtf_found:
+                rtf_found = True
+                logger.info(f"Found RTF body attachment: {att.filename} ({att.size} bytes)")
+                try:
+                    plain, html = convert_rtf_body(att.content)
+                    if html:
+                        body_html = html
+                        logger.info("Extracted HTML from RTF body")
+                    if plain:
+                        body_plain = plain
+                        logger.info("Extracted plain text from RTF body")
+                    
+                    if not plain and not html:
+                        # Couldn't extract content - keep as attachment
+                        logger.warning("Could not extract content from RTF body, keeping as attachment")
+                        remaining_attachments.append(att)
+                except Exception as e:
+                    logger.warning(f"Failed to extract RTF body: {e}")
+                    remaining_attachments.append(att)
+            else:
+                remaining_attachments.append(att)
+        
+        if not rtf_found:
+            return body_plain, body_html, attachments
+        
+        return body_plain, body_html, remaining_attachments
     
     def _decode_payload(self, payload: bytes, charset: str) -> str:
         """Decode payload bytes to string with fallback encodings."""
