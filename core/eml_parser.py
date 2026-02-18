@@ -386,21 +386,28 @@ class EMLParser:
             except Exception as e:
                 logger.warning(f"Error extracting body: {e}")
         
-        # If both body_plain and body_html are empty, check for RTF body
+        # Check for RTF body whenever we don't have HTML content.
         # readpst stores RTF-only bodies as an attachment named "rtf-body.rtf"
-        if not body_plain.strip() and not body_html.strip():
-            body_plain, body_html, attachments = self._try_extract_rtf_body(
+        # and often ALSO produces a text/plain MIME part, so body_plain may
+        # already be populated.  We still want the RTF extraction because the
+        # RTF may contain encapsulated HTML with full formatting (bold, links,
+        # images, etc.) which is far superior to the plain text.
+        if not body_html.strip():
+            rtf_plain, rtf_html, attachments = self._try_extract_rtf_body(
                 attachments
             )
+            if rtf_html:
+                body_html = rtf_html
+                logger.info("Using HTML extracted from RTF body")
+            if rtf_plain and not body_plain.strip():
+                body_plain = rtf_plain
+
             # After RTF extraction we may have HTML with cid: image refs.
-            # Scan attachments for images with content_ids and register
-            # them as inline images so the cid: URLs can be resolved.
+            # Build inline_images from attachments so cid: URLs resolve.
             if body_html:
-                for att in attachments:
-                    cid = getattr(att, 'content_id', None) or ''
-                    if cid and att.content_type.startswith('image/'):
-                        if cid not in inline_images:
-                            inline_images[cid] = att
+                self._register_inline_images(
+                    body_html, attachments, inline_images
+                )
         
         return body_plain, body_html, attachments, inline_images
     
@@ -466,6 +473,62 @@ class EMLParser:
             return body_plain, body_html, attachments
         
         return body_plain, body_html, remaining_attachments
+    
+    def _register_inline_images(
+        self,
+        body_html: str,
+        attachments: List[Attachment],
+        inline_images: Dict[str, Attachment],
+    ) -> None:
+        """
+        Populate *inline_images* so ``cid:`` references in *body_html* resolve.
+
+        Strategy (applied in order):
+        1. Any image attachment that already carries a Content-ID header is
+           registered under that CID.
+        2. For remaining unresolved ``cid:`` refs we try to match by the
+           *filename* portion of the CID (the part before ``@``).  Outlook
+           typically names images ``image001.jpg``, ``image002.png``, etc.,
+           and readpst preserves those filenames in the MIME parts even
+           when it doesn't set a Content-ID header.
+        """
+        # --- pass 1: register by existing Content-ID ---
+        for att in attachments:
+            cid = getattr(att, 'content_id', None) or ''
+            if cid and (att.content_type or '').startswith('image/'):
+                if cid not in inline_images:
+                    inline_images[cid] = att
+
+        # --- pass 2: filename-based matching for unresolved cid: refs ---
+        # Collect all cid: references from the HTML
+        cid_refs = set(re.findall(r'cid:([^"\'>\s]+)', body_html, re.IGNORECASE))
+        if not cid_refs:
+            return
+
+        # Build a map of filename → attachment for image attachments
+        filename_map: Dict[str, Attachment] = {}
+        for att in attachments:
+            if (att.content_type or '').startswith('image/') and att.filename:
+                fname_lower = att.filename.lower()
+                if fname_lower not in filename_map:
+                    filename_map[fname_lower] = att
+
+        for cid_ref in cid_refs:
+            if cid_ref in inline_images:
+                continue  # already resolved
+
+            # Extract the filename portion: "image001.jpg@01DA1234.5678ABCD"
+            # → "image001.jpg"
+            fname_part = cid_ref.split('@')[0].lower() if '@' in cid_ref else cid_ref.lower()
+
+            att = filename_map.get(fname_part)
+            if att:
+                # Register under the full CID ref so cid: replacement works
+                inline_images[cid_ref] = att
+                att.content_id = cid_ref
+                logger.info(f"Matched image '{att.filename}' to cid:{cid_ref} by filename")
+            else:
+                logger.debug(f"No image attachment matches cid:{cid_ref}")
     
     def _decode_payload(self, payload: bytes, charset: str) -> str:
         """Decode payload bytes to string with fallback encodings."""
