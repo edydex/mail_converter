@@ -195,7 +195,7 @@ class EmailToPDFConverter:
         try:
             # Build complete HTML document
             html_content = self._build_html_document(email_data, include_headers)
-            
+
             # Create PDF with WeasyPrint
             font_config = FontConfiguration()
             
@@ -638,6 +638,33 @@ class EmailToPDFConverter:
         # Remove non-printable control characters (except CR/LF/TAB/NBSP)
         html_content = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', html_content)
         
+        # ---- Fix CSS font-family quote corruption ----
+        # Outlook stores font-family:"Aptos",sans-serif inside style="..."
+        # attributes.  The inner double quotes break the HTML attribute
+        # boundary, causing WeasyPrint to see an empty font-family.
+        # Fix: replace "FontName" with 'FontName' inside font-family values.
+        # We iterate because a single value may contain multiple quoted names
+        # (e.g. font-family: "Font1", "Font2", sans-serif).
+        #
+        # CRITICAL: The captured font name [^">;]* must exclude > and ;
+        # to prevent the regex from matching BEYOND the style attribute
+        # boundary on subsequent iterations (after "Font" → 'Font',
+        # the closing " of the style attr could be mistaken for an
+        # inner font-name quote on the next pass).
+        _prev = None
+        while _prev != html_content:
+            _prev = html_content
+            html_content = re.sub(
+                r'(font-family\s*:\s*[^";>]*?)"([^">;]*?)"',
+                r"\1'\2'",
+                html_content,
+            )
+
+        # ---- Strip Unicode surrogates ----
+        # Outlook RTF de-encapsulation can produce lone surrogates
+        # (U+D800..U+DFFF) which crash utf-8 encoding later.
+        html_content = re.sub(r'[\ud800-\udfff]', '', html_content)
+
         # Remove decorative timeline divs (empty divs with border-radius that render as dots)
         # These are typically: <div style="...border-radius:10px..."></div>
         html_content = re.sub(
@@ -670,6 +697,26 @@ class EmailToPDFConverter:
                     # Remove body/html selectors that set margins/fonts
                     # (our wrapper already sets those)
                     css = re.sub(r'(?:html|body)\s*\{[^}]*\}', '', css, flags=re.IGNORECASE)
+
+                    # ---- Clean MSO-specific junk CSS ----
+                    # Remove Microsoft Office CSS properties that WeasyPrint
+                    # doesn't understand (mso-*, tab-stops, etc.)
+                    css = re.sub(r'\bmso-[a-z\-]+\s*:[^;}\n]+;?', '', css, flags=re.IGNORECASE)
+                    css = re.sub(r'\btab-stops\s*:[^;}\n]+;?', '', css, flags=re.IGNORECASE)
+                    css = re.sub(r'\bpage\s*:[^;}\n]+;?', '', css, flags=re.IGNORECASE)
+                    css = re.sub(r'\bpanose-1\s*:[^;}\n]+;?', '', css, flags=re.IGNORECASE)
+                    # Remove additional MSO/IE-specific CSS properties
+                    css = re.sub(r'\blayout-grid-mode\s*:[^;}\n]+;?', '', css, flags=re.IGNORECASE)
+                    css = re.sub(r'\bbehavior\s*:[^;}\n]+;?', '', css, flags=re.IGNORECASE)
+                    # Remove VML/Office namespace selectors (v\:*, o\:*, w\:*)
+                    css = re.sub(r'[vow]\\\s*:\s*\*\s*\{[^}]*\}', '', css, flags=re.IGNORECASE)
+                    # Remove @font-face blocks (often reference unavailable Windows fonts)
+                    css = re.sub(r'@font-face\s*\{[^}]*\}', '', css, flags=re.IGNORECASE)
+                    # Remove @list rules (Outlook list definitions)
+                    css = re.sub(r'@list\s+[^{]*\{[^}]*\}', '', css, flags=re.IGNORECASE)
+                    # Remove empty rule bodies left after stripping
+                    css = re.sub(r'[^{}]+\{\s*\}', '', css)
+
                     css = css.strip()
                     if css:
                         preserved_styles.append(css)
@@ -688,7 +735,24 @@ class EmailToPDFConverter:
         if preserved_styles:
             style_block = '<style type="text/css">' + '\\n'.join(preserved_styles) + '</style>'
             html_content = style_block + html_content
-        
+
+        # ---- Strip mso-* properties from inline style attributes ----
+        # Outlook embeds many mso-specific CSS properties in inline styles
+        # that generate hundreds of WeasyPrint warnings.
+        def _clean_inline_mso(m):
+            style = m.group(1)
+            style = re.sub(r'\bmso-[a-z\-]+\s*:[^;"]+;?\s*', '', style, flags=re.IGNORECASE)
+            style = re.sub(r'\btab-stops\s*:[^;"]+;?\s*', '', style, flags=re.IGNORECASE)
+            style = re.sub(r'\blayout-grid-mode\s*:[^;"]+;?\s*', '', style, flags=re.IGNORECASE)
+            style = re.sub(r'\bbehavior\s*:[^;"]+;?\s*', '', style, flags=re.IGNORECASE)
+            # Replace Windows system color 'windowtext' with standard CSS
+            style = re.sub(r'\bwindowtext\b', '#000000', style, flags=re.IGNORECASE)
+            style = style.strip()
+            if not style:
+                return ''
+            return f'style="{style}"'
+        html_content = re.sub(r'style="([^"]*)"', _clean_inline_mso, html_content, flags=re.IGNORECASE)
+
         # Remove <link> tags (external CSS)
         html_content = re.sub(r'<link[^>]*>', '', html_content, flags=re.IGNORECASE)
         

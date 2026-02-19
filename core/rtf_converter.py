@@ -208,7 +208,10 @@ def _deencapsulate_html(rtf_data: bytes) -> Optional[str]:
                         cp = int(param_str)
                         if cp < 0:
                             cp += 65536
-                        _emit(chr(cp))
+                        # Skip surrogates (U+D800..U+DFFF) – they're invalid
+                        # in isolation and crash utf-8 encoding later
+                        if not (0xD800 <= cp <= 0xDFFF):
+                            _emit(chr(cp))
                     except (ValueError, OverflowError):
                         pass
                     pending_skip = uc_skip
@@ -303,6 +306,9 @@ def _deencapsulate_html(rtf_data: bytes) -> Optional[str]:
         result = ''.join(html_parts).strip()
         if not result:
             return None
+
+        # Strip any remaining surrogates that slipped through
+        result = re.sub(r'[\ud800-\udfff]', '', result)
 
         # Validate we got something resembling HTML
         if '<' not in result and '&' not in result:
@@ -481,10 +487,41 @@ def _parse_control_word(data: bytes, pos: int) -> Tuple[str, str, int]:
 # Native RTF → HTML conversion (for non-encapsulated RTF)
 # ---------------------------------------------------------------------------
 
+def _parse_color_table(data: bytes) -> list:
+    """
+    Extract the color table from RTF data.  Returns a list of CSS color
+    strings like ``['#000000', '#ff0000', ...]``.  Index 0 corresponds to
+    ``\\cfN`` / ``\\cbN`` index 1 (RTF indices are 1-based).
+    """
+    try:
+        text = data.decode('ascii', errors='replace')
+        m = re.search(r'\{\\colortbl\s*;?(.*?)\}', text, re.DOTALL)
+        if not m:
+            return []
+        entries = m.group(1).split(';')
+        colors = []
+        for entry in entries:
+            r = g = b = 0
+            rm = re.search(r'\\red(\d+)', entry)
+            gm = re.search(r'\\green(\d+)', entry)
+            bm = re.search(r'\\blue(\d+)', entry)
+            if rm:
+                r = int(rm.group(1))
+            if gm:
+                g = int(gm.group(1))
+            if bm:
+                b = int(bm.group(1))
+            colors.append(f'#{r:02x}{g:02x}{b:02x}')
+        return colors
+    except Exception:
+        return []
+
+
 def _rtf_to_html(rtf_data: bytes) -> Optional[str]:
     """
     Convert native (non-encapsulated) RTF to HTML, preserving basic
-    formatting: bold, italic, underline, font size, links, and paragraphs.
+    formatting: bold, italic, underline, font size, highlight/background
+    colors, links, and paragraphs.
 
     This ensures the output goes through the WeasyPrint path instead of the
     plain-text reportlab fallback, producing much better PDF quality.
@@ -502,6 +539,8 @@ def _rtf_to_html(rtf_data: bytes) -> Optional[str]:
         bold = False
         italic = False
         underline = False
+        font_size_half_pts = 0      # \fsN is in half-points; 0 = default
+        highlight_color = ''        # \highlightN or \cbN
         skip_group = False
         in_field = False          # inside {\field ...}
         in_fldinst = False        # inside {\*\fldinst ...}  (hyperlink URL)
@@ -512,13 +551,26 @@ def _rtf_to_html(rtf_data: bytes) -> Optional[str]:
         pending_skip = 0
         first_par = True          # suppress leading blank line
 
+        # Color table extracted from {\colortbl ...}
+        color_table: list = _parse_color_table(data)
+
         # Track open inline tags
         _open_b = False
         _open_i = False
         _open_u = False
+        _open_span = False
+
+        # RTF highlight index → CSS color name
+        _HIGHLIGHT_COLORS = {
+            1: 'black', 2: 'blue', 3: 'cyan', 4: 'green',
+            5: 'magenta', 6: 'red', 7: 'yellow', 8: 'white',
+            9: 'darkblue', 10: 'darkcyan', 11: 'darkgreen',
+            12: 'darkmagenta', 13: 'darkred', 14: 'darkyellow',
+            15: 'darkgray', 16: 'lightgray',
+        }
 
         def _close_inlines():
-            nonlocal _open_b, _open_i, _open_u
+            nonlocal _open_b, _open_i, _open_u, _open_span
             if _open_u:
                 parts.append('</u>')
                 _open_u = False
@@ -528,11 +580,31 @@ def _rtf_to_html(rtf_data: bytes) -> Optional[str]:
             if _open_b:
                 parts.append('</b>')
                 _open_b = False
+            if _open_span:
+                parts.append('</span>')
+                _open_span = False
 
         def _sync_inlines():
             """Ensure open HTML tags match the current formatting state."""
-            nonlocal _open_b, _open_i, _open_u
-            # Close tags that are no longer active
+            nonlocal _open_b, _open_i, _open_u, _open_span
+
+            # Determine desired span style
+            span_styles = []
+            if font_size_half_pts and font_size_half_pts != 22:  # 22 half-pts = 11pt default
+                pts = font_size_half_pts / 2
+                span_styles.append(f'font-size:{pts:.0f}pt')
+            if highlight_color:
+                span_styles.append(f'background-color:{highlight_color}')
+
+            # Close tags that are no longer needed or need re-opening with new attrs
+            need_span = bool(span_styles)
+            cur_span_style = ';'.join(span_styles)
+
+            # If span style changed, close and re-open
+            if _open_span and (not need_span or getattr(_sync_inlines, '_last_span', '') != cur_span_style):
+                parts.append('</span>')
+                _open_span = False
+
             if _open_u and not underline:
                 parts.append('</u>')
                 _open_u = False
@@ -542,6 +614,7 @@ def _rtf_to_html(rtf_data: bytes) -> Optional[str]:
             if _open_b and not bold:
                 parts.append('</b>')
                 _open_b = False
+
             # Open tags that are now active
             if bold and not _open_b:
                 parts.append('<b>')
@@ -552,6 +625,10 @@ def _rtf_to_html(rtf_data: bytes) -> Optional[str]:
             if underline and not _open_u:
                 parts.append('<u>')
                 _open_u = True
+            if need_span and not _open_span:
+                parts.append(f'<span style="{cur_span_style}">')
+                _open_span = True
+                _sync_inlines._last_span = cur_span_style
 
         def _emit(s: str):
             if skip_group:
@@ -569,7 +646,8 @@ def _rtf_to_html(rtf_data: bytes) -> Optional[str]:
 
             if b == 0x7B:  # '{'
                 group_stack.append((bold, italic, underline, skip_group,
-                                    in_field, in_fldinst, in_fldrslt))
+                                    in_field, in_fldinst, in_fldrslt,
+                                    font_size_half_pts, highlight_color))
                 i += 1
 
                 # Check for \* destinations
@@ -629,7 +707,8 @@ def _rtf_to_html(rtf_data: bytes) -> Optional[str]:
 
                 if group_stack:
                     (bold, italic, underline, skip_group,
-                     in_field, in_fldinst, in_fldrslt) = group_stack.pop()
+                     in_field, in_fldinst, in_fldrslt,
+                     font_size_half_pts, highlight_color) = group_stack.pop()
                 i += 1
                 continue
 
@@ -653,11 +732,13 @@ def _rtf_to_html(rtf_data: bytes) -> Optional[str]:
                         cp = int(param_str)
                         if cp < 0:
                             cp += 65536
-                        ch = chr(cp)
-                        if in_fldinst:
-                            hyperlink_url += ch
-                        else:
-                            _emit(ch)
+                        # Skip surrogates
+                        if not (0xD800 <= cp <= 0xDFFF):
+                            ch = chr(cp)
+                            if in_fldinst:
+                                hyperlink_url += ch
+                            else:
+                                _emit(ch)
                     except (ValueError, OverflowError):
                         pass
                     pending_skip = uc_skip
@@ -691,6 +772,32 @@ def _rtf_to_html(rtf_data: bytes) -> Optional[str]:
                     continue
                 if ctrl == 'ulnone':
                     underline = False
+                    continue
+                if ctrl == 'fs':
+                    # Font size in half-points
+                    try:
+                        font_size_half_pts = int(param_str)
+                    except (ValueError, TypeError):
+                        font_size_half_pts = 0
+                    continue
+                if ctrl == 'highlight':
+                    # Highlight color by index
+                    try:
+                        idx = int(param_str)
+                        highlight_color = _HIGHLIGHT_COLORS.get(idx, '')
+                    except (ValueError, TypeError):
+                        highlight_color = ''
+                    continue
+                if ctrl == 'cb':
+                    # Character background color from color table
+                    try:
+                        idx = int(param_str)
+                        if idx > 0 and idx <= len(color_table):
+                            highlight_color = color_table[idx - 1]
+                        elif idx == 0:
+                            highlight_color = ''
+                    except (ValueError, TypeError):
+                        pass
                     continue
 
                 # Paragraph / line
@@ -754,6 +861,8 @@ def _rtf_to_html(rtf_data: bytes) -> Optional[str]:
                     bold = False
                     italic = False
                     underline = False
+                    font_size_half_pts = 0
+                    highlight_color = ''
                     continue
 
                 continue
@@ -796,9 +905,38 @@ def _rtf_to_html(rtf_data: bytes) -> Optional[str]:
         if not result:
             return None
 
-        # Clean up the hyperlink URLs that were accumulated in fldinst text
-        # The fldinst accumulates text like: HYPERLINK "http://..."
-        # We already handle this above, but let's clean any leftover artifacts
+        # ---- Post-processing: style email separators & structure ----
+        # Replace common Outlook separator patterns with styled <hr>
+        _SEPARATOR_HR = (
+            '<hr style="border:none;border-top:1px solid #b5c4df;'
+            'margin:16px 0">'
+        )
+        # "-----Original Message-----" or similar dash separators
+        result = re.sub(
+            r'(?:<br\s*/?>)?\s*-{3,}\s*(?:Original Message|'
+            r'Forwarded message|Forwarded by)\s*-{3,}\s*(?:<br\s*/?>)?',
+            _SEPARATOR_HR + r'<b>Original Message</b><br>',
+            result,
+            flags=re.IGNORECASE,
+        )
+        # Long underscore/dash/equals separator lines (>=10 chars)
+        result = re.sub(
+            r'(?:<br\s*/?>)?\s*[_=]{10,}\s*(?:<br\s*/?>)?',
+            _SEPARATOR_HR,
+            result,
+        )
+
+        # ---- Convert consecutive <br> runs into paragraph spacing ----
+        # Replace 2+ consecutive <br> with a paragraph break div for spacing
+        result = re.sub(
+            r'(?:<br\s*/?\s*>){3,}',
+            '<br><br>',
+            result,
+            flags=re.IGNORECASE,
+        )
+
+        # Strip surrogates that may have crept in from Unicode escapes
+        result = re.sub(r'[\ud800-\udfff]', '', result)
 
         # Wrap in basic HTML structure
         html = f"""<html><body>
